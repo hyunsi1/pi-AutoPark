@@ -1,0 +1,10 @@
+# Core vision & ML
+opencv-python>=4.5.0
+torch>=2.0.0
+numpy>=1.21.0
+pyyaml>=6.0.0
+gitpython>=3.1.30  # torch.hub에서 yolov5 로딩 시 필요
+
+# Camera control (CircuitPython on Raspberry Pi)
+adafruit-blinka>=7.0.0
+adafruit-circuitpython-pca9685>=3.5.2
