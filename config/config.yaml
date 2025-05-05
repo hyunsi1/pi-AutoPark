@@ -1,0 +1,54 @@
+# config/config.yaml
+
+camera:
+  # 0 = 기본 웹캠, 또는 이미지 폴더 테스트시 null
+  source: 0
+  image_folder: null
+  loop: false
+
+yolo:
+  # 모델 파일 경로
+  weights_path: "models/yolo/best_weights.pt"
+  # 검출 임계값
+  conf_thres: 0.3
+  iou_thres: 0.45
+  max_det: 50
+
+monodepth:
+  # 킥보드 실제 세로 길이 (m)
+  object_height: 1.0
+  # 카메라 높이 (m)
+  camera_height: 1.2
+  # 카메라 틸트 각도 (deg)
+  tilt_angle: 0
+  # 'ratio' 또는 'ground_plane'
+  method: ratio
+
+# 주차 구역 네 꼭짓점 (화면 픽셀 좌표)
+slot_area_coords:
+  - [100,  50]   # top-left
+  - [540,  50]   # top-right
+  - [540, 370]   # bottom-right
+  - [100, 370]   # bottom-left
+
+# 슬롯 간격 (m)
+slot_gap: 0.1
+
+# PathPlanner 분할 세그먼트 수
+path_segments: 5
+
+# Controller 파라미터
+max_speed: 1.0    # 전진 최대 속도 (m/s)
+turn_speed: 0.5   # 회전 속도 비율 (0~1)
+
+# 장애물 회피
+safe_dist: 0.5    # NAVIGATE 중 안전거리 (m)
+clearance: 0.6    # detour 시 장애물과의 최소 여유 (m)
+
+pan_tilt:
+  pan_channel: 0         # PCA9685 채널
+  tilt_channel: 1        # PCA9685 채널
+  final_tilt_angle: -30  # FINAL_APPROACH 시 틸트 각도 (deg)
+
+final_approach:
+  threshold: 0.25        # 칸 중앙 도달용 깊이 임계치 (m)
