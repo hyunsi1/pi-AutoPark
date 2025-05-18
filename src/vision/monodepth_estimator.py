@@ -11,11 +11,8 @@ class MonoDepthEstimator:
     - ratio 방식: 픽셀 높이 대비 실제 높이 비례식
     - ground_plane 방식: 카메라 틸트 각도 고려한 지면 투영 방식
     """
-    def __init__(
-        self,
-        config_path: str = None
-    ):
-        # config.yaml에서 monodepth 파라미터 로드
+    def __init__(self, config_path: str = None):
+        # config 로드
         if config_path is None:
             config_path = os.path.join(
                 os.path.dirname(__file__), '..', '..', 'config', 'config.yaml'
@@ -23,39 +20,38 @@ class MonoDepthEstimator:
         with open(config_path, 'r', encoding='utf-8') as f:
             cfg = yaml.safe_load(f)
         md_cfg = cfg.get('monodepth', {})
-        # 킥보드 실제 높이(m)
         self.object_height = float(md_cfg.get('object_height', 1.0))
-        # 카메라 지면 높이(m)
         self.camera_height = float(md_cfg.get('camera_height', 1.2))
-        # 카메라 틸트 각도(deg), 아래쪽 기울기 양수
         self.tilt_angle = np.deg2rad(float(md_cfg.get('tilt_angle', 0.0)))
-        # 카메라 내부 파라미터(focal length, principal point)
         cam_mtx, _ = load_camera_parameters()
         self.fy = cam_mtx[1,1]
         self.cy = cam_mtx[1,2]
-        # 계산 방식: 'ratio' 또는 'ground_plane'
         self.method = md_cfg.get('method', 'ratio')
+        # hybrid 시 ratio:ground weight
+        self.hybrid_w = float(md_cfg.get('hybrid_weight', 0.5))
+
+    def _ratio_depth(self, pixel_h: float) -> float:
+        return self.object_height * self.fy / pixel_h
+
+    def _ground_plane_depth(self, y2: float) -> float:
+        v = (y2 - self.cy) / self.fy
+        angle = self.tilt_angle + np.arctan(v)
+        return self.camera_height / np.tan(angle)
 
     def estimate_depth(self, bbox: tuple) -> float:
-        """
-        bbox: (x1, y1, x2, y2) 픽셀 좌표
-        returns: depth in meters
-        """
         x1, y1, x2, y2 = bbox
         pixel_h = y2 - y1
         if pixel_h <= 0:
             return None
-
+        d_ratio = self._ratio_depth(pixel_h)
         if self.method == 'ground_plane':
-            # 바닥면 가정, 바운딩박스 하단 y2 픽셀로부터 지면 방향 각도 계산
-            v = (y2 - self.cy) / self.fy
-            angle = self.tilt_angle + np.arctan(v)
-            depth = self.camera_height / np.tan(angle)
-        else:
-            # ratio 방식: depth ≈ f_y * H / h_pixels
-            depth = self.object_height * self.fy / pixel_h
-
-        return float(depth)
+            return float(self._ground_plane_depth(y2))
+        if self.method == 'hybrid':
+            d_gp = self._ground_plane_depth(y2)
+            # weighted average
+            return float(self.hybrid_w * d_ratio + (1 - self.hybrid_w) * d_gp)
+        # default ratio
+        return float(d_ratio)
 
     def annotate_detections(self, image: np.ndarray, detections: list) -> np.ndarray:
         """
@@ -68,3 +64,110 @@ class MonoDepthEstimator:
             label = f"{depth:.2f}m"
             cv2.putText(image, label, (x1, y2+15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
         return image
+
+if __name__ == "__main__":
+    import unittest
+    import tempfile
+    import os
+    import yaml
+    import numpy as np
+
+    class TestMonoDepthEstimator(unittest.TestCase):
+        @classmethod
+        def setUpClass(cls):
+            # ① 임시 config 파일 생성 (내용은 setUp()에서 덮어씁니다)
+            cls.tf = tempfile.NamedTemporaryFile('w', suffix='.yaml', delete=False)
+            yaml.safe_dump({"monodepth": {}}, cls.tf)
+            cls.tf.close()
+
+        @classmethod
+        def tearDownClass(cls):
+            # 테스트 종료 후 임시 파일 삭제
+            os.remove(cls.tf.name)
+
+        def setUp(self):
+            # ② 매 테스트마다 새로운 인스턴스 생성
+            self.est = MonoDepthEstimator(config_path=self.tf.name)
+            # ③ 카메라 행렬을 고정된 값(fy=1000, cy=500)으로 세팅
+            self.est.fy = 1000.0
+            self.est.cy = 500.0
+
+        def test_ratio_depth(self):
+            """
+            [ratio 모드 테스트]
+            object_height=2m, pixel_h=250px 일 때
+            depth = object_height * fy / pixel_h = 2*1000/250 = 8m
+            """
+            self.est.object_height = 2.0
+            self.est.method = 'ratio'
+            d = self.est.estimate_depth((0, 0, 0, 250))
+            self.assertAlmostEqual(d, 8.0, places=6)
+
+        def test_ground_plane_depth(self):
+            """
+            [ground_plane 모드 테스트]
+            tilt=0°, camera_height=1m, y2=600px
+            angle = atan((y2-cy)/fy) 이고
+            depth = camera_height / tan(angle)
+            """
+            self.est.camera_height = 1.0
+            self.est.tilt_angle = 0.0
+            self.est.method = 'ground_plane'
+            d = self.est.estimate_depth((0, 0, 0, 600))
+            angle = np.arctan((600.0 - 500.0) / 1000.0)
+            expected = 1.0 / np.tan(angle)
+            self.assertAlmostEqual(d, expected, places=6)
+
+        def test_hybrid_depth(self):
+            """
+            [hybrid 모드 테스트]
+            ratio 와 ground_plane 두 값을 weighted sum 하도록 설정 후,
+            예상한 가중합 결과와 일치하는지 확인합니다.
+            """
+            self.est.object_height = 2.0
+            self.est.camera_height = 1.0
+            self.est.tilt_angle = 0.0
+            self.est.method = 'hybrid'
+            self.est.hybrid_w = 0.3
+
+            pixel_h = 200.0
+            y2 = 200.0
+            d = self.est.estimate_depth((0, 0, 0, pixel_h))
+
+            # ratio 결과
+            d_ratio = 2.0 * 1000.0 / pixel_h  # =10.0
+            # ground_plane 결과
+            angle = np.arctan((y2 - 500.0) / 1000.0)
+            d_gp = 1.0 / np.tan(angle)
+            expected = 0.3 * d_ratio + 0.7 * d_gp
+
+            self.assertAlmostEqual(d, expected, places=6)
+
+        def test_invalid_bbox(self):
+            """
+            [잘못된 bbox 처리 테스트]
+            y2 <= y1(높이<=0) 인 경우 None 을 반환하는지 확인합니다.
+            """
+            self.est.method = 'ratio'
+            # y2=y1 → pixel_h=0
+            self.assertIsNone(self.est.estimate_depth((0, 5, 5, 5)))
+            # y2<y1 → pixel_h<0
+            self.assertIsNone(self.est.estimate_depth((0, 10, 5, 3)))
+
+        def test_annotate_detections(self):
+            """
+            [annotate_detections 테스트]
+            1) det['depth'] 필드가 추가되는지
+            2) 반환 이미지 타입이 numpy.ndarray 인지
+            """
+            img = np.zeros((100, 100, 3), dtype=np.uint8)
+            dets = [{"bbox": [10, 20, 30, 80]}]
+            out = self.est.annotate_detections(img.copy(), dets)
+
+            # depth 키가 생성되고, float 타입
+            self.assertIn("depth", dets[0])
+            self.assertIsInstance(dets[0]["depth"], float)
+            # annotate_detections 반환값이 ndarray
+            self.assertIsInstance(out, np.ndarray)
+
+    unittest.main()
