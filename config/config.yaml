@@ -1,5 +1,4 @@
 # config/config.yaml
-
 camera:
   # 0 = 기본 웹캠, 또는 이미지 폴더 테스트시 null
   source: 0
@@ -44,6 +43,7 @@ turn_speed: 0.5   # 회전 속도 비율 (0~1)
 # 장애물 회피
 safe_dist: 0.5    # NAVIGATE 중 안전거리 (m)
 clearance: 0.6    # detour 시 장애물과의 최소 여유 (m)
+brake_bbox_ratio: 0.5 
 
 pan_tilt:
   pan_channel: 0         # PCA9685 채널
@@ -52,3 +52,5 @@ pan_tilt:
 
 final_approach:
   threshold: 0.25        # 칸 중앙 도달용 깊이 임계치 (m)
+
+finish_bbox_ratio: 0.5
