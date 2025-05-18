@@ -1,6 +1,16 @@
 import math
 import time
 import logging
+import os
+try:
+    import RPi.GPIO as GPIO
+except (ImportError, RuntimeError):
+    # 개발 PC(윈도우 등)에서는 더미 모듈 정의
+    from unittest import mock
+    GPIO = mock.MagicMock()
+
+
+SIMULATE_FAST = os.getenv("SIMULATE_FAST", "0") == "1"
 
 class Controller:
     """
@@ -9,48 +19,67 @@ class Controller:
     - navigate_to(): 지정한 waypoint로 이동
     - stop(): 즉시 정지
     """
-    def __init__(self, max_speed: float = 1.0, turn_speed: float = 0.5):
-        # max_speed: 전진 최대 속도 (m/s)
-        # turn_speed: 회전 속도 비율
-        self.max_speed = max_speed
-        self.turn_speed = turn_speed
-        logging.info(f"Controller initialized (max_speed={max_speed} m/s)")
-
-    def navigate_to(self, current: tuple, target: tuple):
+    def __init__(self, pwm_pin=18, freq=50):
         """
-        현재 위치에서 목표 좌표로 전진 및 조향만으로 주행
-
-        Args:
-            current: (x, y) 현재 위치
-            target:  (x, y) 목표 위치
+        pwm_pin: PWM 제어용 GPIO 핀 번호 (BCM 기준)
+        freq: PWM 신호 주파수 (서보는 일반적으로 50Hz)
         """
-        dx = target[0] - current[0]
-        dy = target[1] - current[1]
-        distance = math.hypot(dx, dy)
-        if distance < 0.01:
-            logging.info("Already at waypoint")
+        self.pwm_pin = pwm_pin
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(self.pwm_pin, GPIO.OUT)
+
+        self.pwm = GPIO.PWM(self.pwm_pin, freq)
+        self.pwm.start(0)  # 초기에는 0% 듀티사이클
+        self.cur_angle = 90  # 초기 각도 (중립)
+        self.set_angle(self.cur_angle)
+        print(f"[Init] PWM started on GPIO{pwm_pin} at {freq}Hz")
+
+    def set_angle(self, angle):
+        """
+        주어진 각도로 서보 모터 조향
+        angle: 0 ~ 180도
+        """
+        angle = max(0, min(180, angle))  # 안전 범위 제한
+        duty = 2 + (angle / 18)  # 듀티 변환 공식: 0도 → 2%, 180도 → 12%
+        self.pwm.ChangeDutyCycle(duty)
+        time.sleep(0.3)  # 서보 이동 시간
+        self.pwm.ChangeDutyCycle(0)  # 떨림 방지 (서보 전류 차단)
+        self.cur_angle = angle
+        print(f"[SetAngle] angle={angle}°, duty={duty:.2f}%")
+
+    def navigate_to(self, cur_pos, target_pos):
+        """
+        현재 위치에서 목표 위치로 향하는 방향 각도를 계산하여 조향
+        """
+        dx = target_pos[0] - cur_pos[0]
+        dy = target_pos[1] - cur_pos[1]
+
+        if dx == 0 and dy == 0:
+            print("[Navigate] 현재 위치와 목표 위치가 동일. 조향 생략")
             return
 
-        # 목표 각도 계산
-        desired_heading = math.degrees(math.atan2(dy, dx))
-        logging.info(f"Navigating: distance={distance:.2f}m, heading={desired_heading:.1f}°")
+        angle_rad = math.atan2(dy, dx)
+        angle_deg = math.degrees(angle_rad)
 
-        # 스티어링만으로 유턴·회전 구현
-        # 실제 로봇: set_steering(desired_heading)
-        turn_time = abs(desired_heading) / (self.turn_speed * 360)  # 비율에 따른 회전 시간 계산
-        logging.debug(f"Turning toward heading: {desired_heading:.1f}° (turn_time={turn_time:.2f}s)")
-        time.sleep(turn_time)
+        # -90도 ~ +90도 범위를 0도 ~ 180도로 맵핑
+        steering_angle = 90 + angle_deg
+        steering_angle = max(0, min(180, steering_angle))
 
-        # 전진
-        # 실제 로봇: set_throttle(self.max_speed)
-        move_time = distance / self.max_speed
-        logging.debug(f"Driving forward: {distance:.2f}m (move_time={move_time:.2f}s)")
-        time.sleep(move_time)
-        logging.info("Reached waypoint")
+        self.set_angle(steering_angle)
+        print(f"[Navigate] {cur_pos} → {target_pos} → θ = {steering_angle:.1f}°")
 
     def stop(self):
         """
-        차를 즉시 정지시키는 메서드
+        PWM 출력을 0으로 설정해 모터를 정지시킴
         """
-        logging.info("Controller: stop called. Cutting throttle.")
-        # 실제 로봇: set_throttle(0)
+        self.pwm.ChangeDutyCycle(0)
+        print("[Stop] PWM 출력 중지")
+
+    def cleanup(self):
+        """
+        GPIO 자원 해제
+        """
+        self.stop()
+        self.pwm.stop()
+        GPIO.cleanup()
+        print("[Cleanup] GPIO 해제 완료")
