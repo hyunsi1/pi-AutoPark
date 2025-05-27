@@ -47,6 +47,14 @@ class Controller:
         self.cur_angle = angle
         print(f"[SetAngle] angle={angle}°, duty={duty:.2f}%")
 
+    def set_speed(self, duty):
+        """
+        속도 설정용 PWM duty. 일반적으로 0~100 사이 값 사용.
+        """
+        duty = max(0, min(100, duty))
+        self.motor_pwm.ChangeDutyCycle(duty)
+        print(f"[SetSpeed] duty={duty:.1f}%")
+
     def navigate_to(self, cur_pos, target_pos):
         """
         현재 위치에서 목표 위치로 향하는 방향 각도를 계산하여 조향
@@ -66,6 +74,7 @@ class Controller:
         steering_angle = max(0, min(180, steering_angle))
 
         self.set_angle(steering_angle)
+        self.set_speed(30)
         print(f"[Navigate] {cur_pos} → {target_pos} → θ = {steering_angle:.1f}°")
 
     def stop(self):
@@ -73,6 +82,7 @@ class Controller:
         PWM 출력을 0으로 설정해 모터를 정지시킴
         """
         self.pwm.ChangeDutyCycle(0)
+        self.motor_pwm.ChangeDutyCycle(0)
         print("[Stop] PWM 출력 중지")
 
     def cleanup(self):
@@ -81,5 +91,6 @@ class Controller:
         """
         self.stop()
         self.pwm.stop()
+        self.motor_pwm.stop()
         GPIO.cleanup()
         print("[Cleanup] GPIO 해제 완료")
