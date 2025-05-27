@@ -10,6 +10,8 @@ from camera.pan_tilt_control import PanTiltController
 from interface.user_io import UserIO
 from fsm.state_machine import StateMachine
 
+import time
+
 
 def load_config(path='config/config.yaml'):
     # UTF-8로 파일을 읽어 cp949 디코딩 오류 방지
@@ -39,9 +41,8 @@ def main():
         loop=cfg['camera']['loop']
     )
     # YOLODetector는 config 파일 내 값을 읽어 초기화합니다
-    yolo = YOLODetector(
-        weights_path=cfg['yolo']['weights_path']
-    )
+    yolo_coco = YOLODetector(weights_path=cfg['yolo']['coco_weights'])
+    yolo_custom = YOLODetector(weights_path=cfg['yolo']['custom_weights'])
         # MonoDepthEstimator는 config 파일에서 설정을 로드하여 초기화합니다
     depth = MonoDepthEstimator()
         # SlotAllocator는 픽셀 좌표 리스트만 전달합니다
@@ -57,20 +58,22 @@ def main():
     tilt_channel=cfg['pan_tilt']['tilt_channel']
     )
     ui = UserIO()
-
+    yolo_detectors = {
+        "coco": yolo_coco,
+        "custom": yolo_custom
+    }
     # 3. 상태 머신 실행
-    sm = StateMachine(
-        cfg,
-        frame_capture,
-        yolo,
-        depth,
-        allocator,
-        planner,
-        controller,
-        pan_tilt,
-        ui
-    )
+    sm = StateMachine(cfg,
+                  frame_capture,
+                  yolo_detectors=yolo_detectors,
+                  monodepth_estimator=depth,
+                  slot_allocator=allocator,
+                  path_planner=planner,
+                  controller=controller,
+                  pan_tilt_controller=pan_tilt,
+                  user_io=ui)
     sm.run()
+    
 
 
 if __name__ == '__main__':
