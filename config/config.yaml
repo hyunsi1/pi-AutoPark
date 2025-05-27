@@ -7,7 +7,8 @@ camera:
 
 yolo:
   # 모델 파일 경로
-  weights_path: "models/yolo/best_weights.pt"
+  coco_weights: yolov5n.pt
+  custom_weights: C:/Users/user/OneDrive/Documents/VSCode/pi_AutoPark/yolov5/runs/train/scooter_detector1/weights/best.pt
   # 검출 임계값
   conf_thres: 0.3
   iou_thres: 0.45
@@ -36,9 +37,9 @@ slot_gap: 0.1
 # PathPlanner 분할 세그먼트 수
 path_segments: 5
 
-# Controller 파라미터
-max_speed: 1.0    # 전진 최대 속도 (m/s)
-turn_speed: 0.5   # 회전 속도 비율 (0~1)
+controller:
+  max_speed: 1.0           # 전진 최대 속도 (m/s)
+  turn_speed: 0.5          # 회전 시 속도 비율
 
 # 장애물 회피
 safe_dist: 0.5    # NAVIGATE 중 안전거리 (m)
@@ -46,9 +47,8 @@ clearance: 0.6    # detour 시 장애물과의 최소 여유 (m)
 brake_bbox_ratio: 0.5 
 
 pan_tilt:
-  pan_channel: 0         # PCA9685 채널
-  tilt_channel: 1        # PCA9685 채널
-  final_tilt_angle: -30  # FINAL_APPROACH 시 틸트 각도 (deg)
+  tilt_pin: 12        # GPIO 핀 번호 (예: GPIO 12)
+  final_tilt_angle: -30    # FINAL_APPROACH 시 틸트 각도
 
 final_approach:
   threshold: 0.25        # 칸 중앙 도달용 깊이 임계치 (m)
