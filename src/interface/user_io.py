@@ -42,8 +42,12 @@ class UserIO:
         logging.info("User notified of completion.")
 
     def wait_cancel(self, timeout: float):
-        """취소 요청 대기 (timeout 초 내에 q 입력 시 True 반환)"""
-        print(f"{timeout:.1f}초 내에 주차를 취소하려면 q + Enter를 누르세요.")
+        """
+        취소 요청 대기 (timeout 초 내에 q 입력 시 True 반환)
+        안내 메시지는 한 번만 출력합니다.
+        """
+        if timeout > 0:
+            print(f"{timeout:.1f}초 내에 주차를 취소하려면 q + Enter를 누르세요.")
         start = time.time()
         while time.time() - start < timeout:
             if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
@@ -51,7 +55,6 @@ class UserIO:
                 if s == 'q':
                     print("주차를 취소합니다.")
                     return True
-        return False
 
 # 간단 사용 예제
 if __name__ == '__main__':
