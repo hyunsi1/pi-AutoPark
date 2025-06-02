@@ -9,6 +9,8 @@ yolo:
   # 모델 파일 경로
   coco_weights: yolov5n.pt
   custom_weights: C:/Users/user/OneDrive/Documents/VSCode/pi_AutoPark/yolov5/runs/train/scooter_detector1/weights/best.pt
+  #custom_weights: C:/Users/user/OneDrive/Documents/VSCode/pi_AutoPark/yolov5/custom_model.tflite
+  #coco_weights: C:/Users/user/OneDrive/Documents/VSCode/pi_AutoPark/yolov5/coco_model.tflite
   # 검출 임계값
   conf_thres: 0.3
   iou_thres: 0.45
@@ -16,9 +18,9 @@ yolo:
 
 monodepth:
   # 킥보드 실제 세로 길이 (m)
-  object_height: 1.0
+  object_height: 0.3
   # 카메라 높이 (m)
-  camera_height: 1.2
+  camera_height: 0.4
   # 카메라 틸트 각도 (deg)
   tilt_angle: 0
   # 'ratio' 또는 'ground_plane'
@@ -47,7 +49,7 @@ clearance: 0.6    # detour 시 장애물과의 최소 여유 (m)
 brake_bbox_ratio: 0.5 
 
 pan_tilt:
-  tilt_pin: 12        # GPIO 핀 번호 (예: GPIO 12)
+  tilt_pin: 12 
   final_tilt_angle: -30    # FINAL_APPROACH 시 틸트 각도
 
 final_approach:
