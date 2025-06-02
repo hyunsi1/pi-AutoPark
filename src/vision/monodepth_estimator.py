@@ -54,9 +54,6 @@ class MonoDepthEstimator:
         return float(d_ratio)
 
     def annotate_detections(self, image: np.ndarray, detections: list) -> np.ndarray:
-        """
-        detections 리스트에 depth 추가하고 이미지에 표시
-        """
         for det in detections:
             depth = self.estimate_depth(det['bbox'])
             det['depth'] = depth
@@ -64,6 +61,29 @@ class MonoDepthEstimator:
             label = f"{depth:.2f}m"
             cv2.putText(image, label, (x1, y2+15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
         return image
+    
+    def estimate_current_position_from_y2(self, y2: float) -> tuple:
+        """
+        y2 좌표(픽셀)로부터 차량의 현재 위치 (x, y)를 추정
+
+        Args:
+            y2 (float): bbox 하단 또는 슬롯 중심의 y 픽셀 좌표
+
+        Returns:
+            tuple: (x, y) 카메라 기준의 현재 위치
+        """
+        # 이미지 중심 기준 위치 계산
+        v = (y2 - self.cy) / self.fy
+        alpha = self.tilt_angle + np.arctan(v)
+        
+        # 거리(depth) 계산 (삼각측량)
+        distance = self.camera_height / np.tan(alpha)
+
+        # 정면 기준으로 현재 위치 (x는 0으로 간주)
+        x = 0
+        y = distance
+
+        return (x, y)
 
 if __name__ == "__main__":
     import unittest
