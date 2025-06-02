@@ -8,12 +8,10 @@ from navigation.path_planner import PathPlanner
 from navigation.controller import Controller
 from camera.pan_tilt_control import PanTiltController
 from interface.user_io import UserIO
-from fsm.state_machine import StateMachine
-
+from fsm.state_machine_ver2 import StateMachine
 import time
 
-
-def load_config(path='config/config.yaml'):
+def load_config(path='C:/Users/user/OneDrive/Documents/VSCode/pi_AutoPark/config/config.yaml'):
     # UTF-8로 파일을 읽어 cp949 디코딩 오류 방지
     with open(path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
@@ -54,9 +52,7 @@ def main():
         cfg['path_segments']
     )
     controller = Controller()
-    pan_tilt = PanTiltController(
-    tilt_channel=cfg['pan_tilt']['tilt_channel']
-    )
+    pan_tilt = PanTiltController()
     ui = UserIO()
     yolo_detectors = {
         "coco": yolo_coco,
@@ -74,7 +70,42 @@ def main():
                   user_io=ui)
     sm.run()
     
+if __name__ == '__main__':
+    main()
 
+
+'''
+import logging
+import sys
+
+from interface.user_io import UserIO
+from fsm.state_machine import StateMachine
+
+def main():
+    # 1) 로그 설정
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S"
+    )
+    logger = logging.getLogger(__name__)
+    logger.info("AutoPark 시작")
+
+    # 2) 사용자 입력: Enter 로 시작, q 로 종료
+    ui = UserIO()
+    ui.prompt_start()
+
+    # 3) FSM 초기화 & 실행
+    try:
+        sm = StateMachine(config_path="config/config.yaml")
+        sm.run()   # 여기에 캡처→검출→화면→키 이벤트 루프 전부 들어있습니다
+    except KeyboardInterrupt:
+        logger.info("사용자에 의해 중단됨")
+        sys.exit(0)
+    except Exception as e:
+        logger.exception(f"예기치 못한 오류 발생: {e}")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
+'''
