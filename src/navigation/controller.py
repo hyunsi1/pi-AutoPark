@@ -95,7 +95,7 @@ class KickboardController:
         GPIO.cleanup()
         print("[Cleanup] GPIO 정리 완료")
 
-
+'''
 import math
 import time
 import logging
@@ -176,3 +176,4 @@ class Controller:
         self.motor_pwm.stop()
         GPIO.cleanup()
         print("[Cleanup] GPIO 해제 완료")
+'''
