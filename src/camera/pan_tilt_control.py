@@ -1,5 +1,6 @@
 import time
 import logging
+############ for DFR0604 HAT ##############
 try:
     from DFRobot_Expansion_Board_IIC import DFRobot_Expansion_Board_IIC as Board
 except ImportError:
