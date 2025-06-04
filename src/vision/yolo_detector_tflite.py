@@ -135,13 +135,13 @@ if __name__ == "__main__":
 
     detector_coco = YOLODetector(
         name="coco",
-        weights_path="C:/Users/user/OneDrive/Documents/VSCode/pi_AutoPark/yolov5/yolov5n-fp16.tflite",
+        weights_path="/home/pi/autopark/yolov5_weight/yolov5n-fp16.tflite",
         threshold=0.5
     )
 
     detector_custom = YOLODetector(
         name="custom",
-        weights_path="C:/Users/user/OneDrive/Documents/VSCode/pi_AutoPark/yolov5/last4-fp16.tflite",
+        weights_path="/home/pi/autopark/yolov5_weight/last4-fp16.tflite",
         threshold=0.5
     )
 
