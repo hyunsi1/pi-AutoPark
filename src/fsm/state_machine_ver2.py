@@ -22,11 +22,14 @@ class DetectionWorker(threading.Thread):
     def __init__(self, capture, detectors: dict, out_q, event):
         super().__init__(daemon=True)
         self.capture = capture
-        self.detectors = detectors
+        self.detectors = list(detectors.items())  # [('coco', model), ('custom', model)]
         self.out_q = out_q
         self.event = event
         self.failure_count = 0
+        self.det_index = 0  # alternating index
         self.logger = logging.getLogger(__name__)
+
+        self.prev_results = {}  # coco와 custom 결과 유지
 
     def run(self):
         while True:
@@ -36,6 +39,7 @@ class DetectionWorker(threading.Thread):
                 self.logger.error(f"Frame capture exception: {e}")
                 time.sleep(0.5)
                 continue
+
             if not ret or frame is None:
                 self.failure_count += 1
                 if self.failure_count > 50 and hasattr(self.capture, 'reopen'):
@@ -47,18 +51,19 @@ class DetectionWorker(threading.Thread):
                     self.failure_count = 0
                 time.sleep(0.01)
                 continue
+
             self.failure_count = 0
-            detections = {
-                name: detector.detect(frame)
-                for name, detector in self.detectors.items()
-            }
+            name, detector = self.detectors[self.det_index]
+            det_result = detector.detect(frame)
+            self.prev_results[name] = det_result  # 결과 저장
+
+            self.det_index = (self.det_index + 1) % len(self.detectors)
             try:
-                self.out_q.put_nowait((frame.copy(), detections))
+                self.out_q.put_nowait((frame.copy(), self.prev_results.copy()))
             except queue.Full:
                 _ = self.out_q.get_nowait()
-                self.out_q.put_nowait((frame.copy(), detections))
+                self.out_q.put_nowait((frame.copy(), self.prev_results.copy()))
             self.event.set()
-
 
 class StateMachine:
     def __init__(self, cfg, frame_capture, yolo_detectors, monodepth_estimator,
@@ -96,18 +101,30 @@ class StateMachine:
             self.new_det_event.clear()
             frame, detections = self.det_q.get()
 
-            self.ui.show_status(f"State: {self.state.name}")
-            for model_dets in detections.values():
-                for det in model_dets:
-                    x1, y1, x2, y2 = det['bbox']
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            #self.ui.show_status(f"State: {self.state.name}")
+            for name, det_list in detections.items():
+                color = (255, 0, 0) if name == "coco" else (0, 255, 0)
+                for det in det_list:
+                    x1, y1, x2, y2 = det["bbox"]
+                    conf = det["confidence"]
+                    label = name.upper()
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(frame, f"{label}:{conf:.2f}", (x1, y1 - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
             cv2.imshow("Detection", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 self.logger.info("User pressed 'q' to cancel parking")
                 break
 
+            self.ctrl.update_navigation()
+            self.ctrl.update_steering()
+
+            if self.ctrl.is_busy:
+                continue
+
             if self.state == State.SEARCH:
-                self._search_step()
+                self._search_step(frame)
             elif self.state == State.NAVIGATE:
                 self._navigate_step(detections)
             elif self.state == State.OBSTACLE_AVOID:
@@ -123,84 +140,46 @@ class StateMachine:
         cv2.destroyAllWindows()
         self.ui.notify_complete()
 
-    def _search_step(self):
+    def _search_step(self, frame):
         self.wait_count = 0
 
-        # 최신 프레임 받아오기
-        try:
-            frame, _ = self.det_q.get(timeout=1.0)
-        except queue.Empty:
-            self.logger.warning("[SEARCH] 감지 큐가 비어 있음 → 재시도")
-            return
-
-        # Hough Line을 통한 라인 검출
-        lines, _ = detect_parking_lines(frame)
-
-        # slot_center 계산 시 라인이 적으면 무시
-        if lines is None or len(lines) < 4:
-            self.logger.info(f"[SEARCH] 검출된 라인 부족 (n={len(lines) if lines else 0}) → 슬롯 검출 불가")
-            # 추가: 장애물로 인해 시야가 가려진 경우 → WAIT 상태로 전환
-            detections = {
-                name: detector.detect(frame)
-                for name, detector in self.detectors.items()
-            }
-            frame_height = frame.shape[0]
-            for det in detections.get("coco", []):
-                x1, y1, x2, y2 = det["bbox"]
-                if (y2 - y1) / frame_height > self.cfg.get("obstacle_height_ratio_threshold", 0.5):
-                    self.logger.info("[SEARCH] 시야를 가리는 장애물 존재 → WAIT 전환")
-                    self.ctrl.stop()
-                    self.state = State.WAIT
-                    return
-            return  # 장애물은 없지만 라인 부족 → 다음 루프로 탐색 유지
-
-        # 슬롯 중심 계산
-        slot_center = find_parking_slot_center(lines, frame.shape)
-        print(f"[DEBUG] slot_center = {slot_center}")
-
-        # 슬롯 중심 유효성 검증
+        slot_center, annotated_frame = detect_parking_slot_by_contour(frame)
         if not slot_center or slot_center[0] < 20 or slot_center[1] < 20:
             self.logger.info(f"[SEARCH] 비정상적인 슬롯 중심 좌표 {slot_center} → 무효 처리")
             return
 
-        # 픽셀 좌표 → 월드 좌표
         world_slot = self.allocator.p2w(*slot_center)
-
-        # 주차 슬롯 중심 기준 0.5m 뒤에서 접근 시작
         self.goal_slot = world_slot
-        self.current_pos = (
-            world_slot[0] - 0.5,
-            world_slot[1]
-        )
+
+        y2 = slot_center[1]
+        self.current_pos = self.depth_estimator.estimate_current_position_from_y2(y2)
+        self.logger.info(f"[SEARCH] 슬롯 중심 기반 현재 위치 추정 완료: {self.current_pos}")
 
         self.state = State.NAVIGATE
         self.logger.info("[SEARCH] 슬롯 중심 추정 완료 → NAVIGATE 전환")
 
-
     def _navigate_step(self, detections):
         if self.goal_slot is None or self.current_pos is None:
             self.logger.error("[NAVIGATE] goal_slot 또는 current_pos가 None입니다. NAVIGATE 중단")
-            self.state = State.SEARCH  # 안전하게 초기화 상태로 돌리기
+            self.state = State.SEARCH
             return
         self.wait_count = 0
-        frame_height = self.capture.height if hasattr(self.capture, 'height') else 480
 
-        # custom: Monodepth로 거리 기준 판단
         for det in detections.get("custom", []):
             depth = self.depth_estimator.estimate_depth(det["bbox"])
-            if depth is not None and depth < self.cfg.get("obstacle_distance_threshold", 0.5):
+            if depth is not None and depth < self.cfg.get("obstacle_distance_threshold", 10):
                 self.ctrl.stop()
+                print(f"[Obstacle-Custom] depth={depth:.2f}m → WAIT 상태")
                 self.logger.info(f"[Obstacle-Custom] depth={depth:.2f}m → WAIT 상태")
                 self.state = State.WAIT
                 return
 
-        # coco: 화면 내 비율 기준 판단
+        frame_height = self.capture.height if hasattr(self.capture, 'height') else 480
         for det in detections.get("coco", []):
             x1, y1, x2, y2 = det["bbox"]
-            box_height = y2 - y1
-            if box_height / frame_height > self.cfg.get("obstacle_height_ratio_threshold", 0.5):
+            if (y2 - y1) / frame_height > self.cfg.get("obstacle_height_ratio_threshold", 0.7):
                 self.ctrl.stop()
-                self.logger.info(f"[Obstacle-COCO] bbox height ratio={box_height/frame_height:.2f} → WAIT 상태")
+                self.logger.info("[Obstacle-COCO] 시야를 가리는 장애물 존재 → WAIT 전환")
                 self.state = State.WAIT
                 return
 
