@@ -67,8 +67,9 @@ class PathPlanner:
         dx = goal_pos[0] - current_pos[0]
         dy = goal_pos[1] - current_pos[1]
         dist = (dx**2 + dy**2) ** 0.5
-        if dist == 0:
-            return current_pos
+
+        if dist == 0 or dist <= self.step_size:
+            return goal_pos  # ⬅ 바로 도달
 
         ratio = self.step_size / dist
         new_x = current_pos[0] + dx * ratio
