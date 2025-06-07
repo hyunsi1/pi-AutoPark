@@ -8,7 +8,7 @@ from navigation.path_planner import PathPlanner
 from navigation.controller import Controller
 from camera.pan_tilt_control import PanTiltController
 from interface.user_io import UserIO
-from fsm.state_machine_ver2 import StateMachine
+from fsm.state_machine_ver3 import StateMachine
 import time
 
 def load_config(path='C:/Users/user/OneDrive/Documents/VSCode/pi_AutoPark/config/config.yaml'):
@@ -39,8 +39,24 @@ def main():
         loop=cfg['camera']['loop']
     )
     # YOLODetector는 config 파일 내 값을 읽어 초기화합니다
-    yolo_coco = YOLODetector(weights_path=cfg['yolo']['coco_weights'])
-    yolo_custom = YOLODetector(weights_path=cfg['yolo']['custom_weights'])
+    yolo_coco = YOLODetector(name="coco", weights_path=cfg['yolo']['coco_weights'])
+    yolo_custom = YOLODetector(name="custom", weights_path=cfg['yolo']['custom_weights'])
+    '''
+    yolo_coco = YOLODetector(
+        name="coco",
+        weights_path=cfg['yolo']['coco_weights'],
+        input_size=(320, 320),
+        threshold=cfg['yolo'].get('threshold', 0.5),
+        nms_threshold=cfg['yolo'].get('nms_threshold', 0.4)
+    )
+
+    yolo_custom = YOLODetector(
+        name="custom",
+        weights_path=cfg['yolo']['custom_weights'],
+        input_size=(320, 320),
+        threshold=cfg['yolo'].get('threshold', 0.5),
+        nms_threshold=cfg['yolo'].get('nms_threshold', 0.4)
+    )'''
         # MonoDepthEstimator는 config 파일에서 설정을 로드하여 초기화합니다
     depth = MonoDepthEstimator()
         # SlotAllocator는 픽셀 좌표 리스트만 전달합니다
@@ -52,7 +68,9 @@ def main():
         cfg['path_segments']
     )
     controller = Controller()
-    pan_tilt = PanTiltController()
+    pan_tilt = PanTiltController(
+    tilt_pin=cfg['pan_tilt']['tilt_pin']
+    )
     ui = UserIO()
     yolo_detectors = {
         "coco": yolo_coco,
@@ -70,6 +88,8 @@ def main():
                   user_io=ui)
     sm.run()
     
+
+
 if __name__ == '__main__':
     main()
 
