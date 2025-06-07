@@ -130,7 +130,9 @@ class StateMachine:
                 continue
 
             if self.state == State.SEARCH:
-                self._search_step(frame)
+                self._search_step(frame, detections)
+            elif self.state == State.REPOSITION:
+                self._reposition_step()
             elif self.state == State.NAVIGATE:
                 self._navigate_step(detections)
             elif self.state == State.OBSTACLE_AVOID:
@@ -146,60 +148,47 @@ class StateMachine:
         cv2.destroyAllWindows()
         self.ui.notify_complete()
 
-    def _search_step(self, frame):
-        """
-        SEARCH 단계
-        · custom 킥보드 bbox aspect-ratio 로 측면 여부 판단
-        · bbox 자체가 없으면 ‘빈 화면’으로 간주
-        · 위 두 경우 → REPOSITION(왼쪽-뒤 후진)
-        · 그 외 gap / parking 목표 설정 → NAVIGATE
-        """
+    def _search_step(self, frame, detections):
         self.wait_count = 0
 
-        # ── YOLO(custom) 결과 ──────────────────────────
-        dets  = self._get_yolo_detections(frame)
-        boxes = [d["bbox"] for d in dets.get("custom", [])]
+        boxes = [d["bbox"] for d in detections.get("custom", [])]
 
-        # ── ① ‘측면’ 판단 & ‘빈 화면’ 판단 ──────────────
         if boxes:
-            ar_vals   = [(y2 - y1) / max(1, x2 - x1) for x1, y1, x2, y2 in boxes]
-            side_view = np.mean(ar_vals) < 1.4        # ★ 현장 튜닝
+            ar_vals = [(y2 - y1) / max(1, x2 - x1) for x1, y1, x2, y2 in boxes]
+            side_view = np.mean(ar_vals) < 1.4
         else:
-            side_view = False     # bbox 없으면 AR 계산 불가
+            side_view = False
 
         empty_view = (len(boxes) == 0)
 
         if side_view or empty_view:
             self.logger.info("[SEARCH] 측면 시야 또는 빈 화면 → REPOSITION")
-            self._side_view_flag = True          # REPOSITION 단계에서 방향 구분 용
+            self._side_view_flag = True
             self.state = State.REPOSITION
             return
 
-        # ── ② GoalSetter 로 목표점 탐색 ─────────────────
         goal, _, mode = self.goal_setter.get_goal_point(frame, boxes)
         if goal is None:
             self.logger.info("[SEARCH] 목표점 없음")
             return
 
-        # ── ③ 목표가 있으면 NAVIGATE ───────────────────
         self.parking_mode = mode
-        self.goal_slot    = goal
-        self.current_pos  = self.depth_estimator.estimate_current_position_world()
+        self.goal_slot = goal
+        self.current_pos = self.depth_estimator.estimate_current_position_world()
 
         if mode == "parking":
-            self.pan_tilt.reset()      # 빈 주차장 → 카메라 정면 고정
+            self.pan_tilt.reset()
 
         self.state = State.NAVIGATE
         self.logger.info(f"[SEARCH] mode={mode}, goal={self.goal_slot} → NAVIGATE")
 
-    def _reposition_step(self, detections):
-        SIDE_BACK_TIME = 1.2          # 현장 튜닝
+    def _reposition_step(self):
+        SIDE_BACK_TIME = 1.2       
 
         if not hasattr(self, "_repo_inited"):
             # 항상 ‘왼쪽 뒤’ 대각 후진
-            steer = self.ctrl.map_physical_angle_to_servo(100)   # 약 20° 좌
-            self.ctrl.set_angle(steer)
-            self.ctrl.set_speed(20, reverse=True)
+            self.ctrl.set_angle(100)
+            self.ctrl.set_speed(50, reverse=True)
             self._repo_dur   = SIDE_BACK_TIME
             self._repo_start = time.time()
             self._repo_inited = True
@@ -210,8 +199,8 @@ class StateMachine:
             self.ctrl.stop()
             self.ctrl.set_angle(self.ctrl.ANGLE_FORWARD)  # 핸들 중앙
             del self._repo_inited, self._side_view_flag   # 플래그 초기화
-            self.state = State.NAVIGATE
-            self.logger.info("[REPO] 완료 → NAVIGATE")
+            self.state = State.SEARCH
+            self.logger.info("[REPO] 완료 → 다시 SEARCH")
 
 
     def _navigate_step(self, detections):
@@ -323,7 +312,7 @@ class StateMachine:
                     break
 
         if obstacle_detected:
-            if self.wait_count >= 5:
+            if self.wait_count >= 1:
                 print("[WAIT] 장애물 고정으로 판단 → OBSTACLE_AVOID 전환")
                 self.state = State.OBSTACLE_AVOID
                 del self.wait_start_time  # 초기화
