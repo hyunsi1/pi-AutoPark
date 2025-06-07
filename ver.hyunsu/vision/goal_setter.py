@@ -1,57 +1,39 @@
-import cv2, numpy as np
-from utility.transformations import pixel_to_world
+import cv2
+import numpy as np
+from utility.transformations import p2w  # pixel → world 변환 함수
 
+from vision.find_black_rect import find_black_rect 
 
 class GoalSetter:
-    """킥보드 gap 또는 빈 슬롯 왼쪽-위 꼭짓점을 픽셀/월드 좌표로 반환"""
-    def __init__(self, min_gap=100, homography=None):
-        self.min_gap = min_gap
-        self.H = homography
+    def __init__(self, slot_gap=0.1):
+        self.slot_gap = slot_gap
 
-    # ──────────────────────────────────────────────────────────
-    def get_goal_point(self, img, detections):
-        # ① 킥보드가 있을 때 – 가장 넓은 gap 중앙
-        if detections:
-            cx = [((x1+x2)//2, (y1+y2)//2) for x1,y1,x2,y2 in detections]
-            cx.sort(key=lambda p: p[0])
-            gaps, best = [], None
-            for (x0,_), (x1,_) in zip(cx, cx[1:]):
-                g = x1-x0
-                gaps.append(g)
-                if g > self.min_gap and (best is None or g > best[0]):
-                    best = (g, (x0+x1)//2, (img.shape[0]//2))
-            if best:
-                _, gx, gy = best
-                return self._p2w((gx, gy)), None, 'gap'
+    def get_goal_point(self, frame, boxes):
+        """
+        ▸ 검정 네모(주차장) 감지되면 → 왼쪽 위 꼭짓점을 목표로 (mode='parking')
+        ▸ 아니면 킥보드 gap 탐색 (mode='gap')
+        """
+        # ① 검정 네모 우선 탐색
+        goal, corners, _ = find_black_rect(frame)
+        if goal:
+            goal_world = p2w(goal[0], goal[1])[:2]  # x, y만
+            return goal_world, corners, 'parking'
 
-        # ② 킥보드가 없을 때 – 검은 테이프 사각형
-        center, corners = self._detect_black_rect(img)
-        if corners:
-            # 네 변 길이 계산
-            edges = [np.linalg.norm(np.subtract(corners[i], corners[(i+1)%4]))
-                     for i in range(4)]
-            idx = np.argsort(edges)[:2]          # 짧은 변 두 개
-            # 더 왼쪽인 변
-            left_idx = min(idx, key=lambda i: sum(pt[0] for pt in
-                                                  (corners[i], corners[(i+1)%4])))
-            a, b = corners[left_idx], corners[(left_idx+1)%4]
-            goal_px = a if a[1] < b[1] else b    # 위쪽 꼭짓점
-            return self._p2w(goal_px), corners, 'parking'
-        return None, None, 'none'
+        # ② 킥보드 gap 탐색
+        if len(boxes) < 2:
+            return None, None, 'gap'  # gap 찾을 수 없음
 
-    # ──────────────────────────────────────────────────────────
-    def _detect_black_rect(self, img):
-        g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        _, mask = cv2.threshold(g, 90, 255, cv2.THRESH_BINARY_INV)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((45,45), np.uint8))
-        cnts,_ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        rect = max((c for c in cnts if len(cv2.approxPolyDP(c,0.04*cv2.arcLength(c,True),True))==4),
-                   key=cv2.contourArea, default=None)
-        if rect is None: return None, None
-        corners = [tuple(pt[0]) for pt in cv2.approxPolyDP(rect, 0.04*cv2.arcLength(rect,True), True)]
-        c = tuple(map(int, np.mean(corners, axis=0)))
-        return c, corners
+        # x 중심좌표 기준으로 정렬
+        centers = [((x1+x2)//2, (y1+y2)//2) for x1, y1, x2, y2 in boxes]
+        centers.sort()
 
-    # ──────────────────────────────────────────────────────────
-    def _p2w(self, pt):
-        return pixel_to_world(*pt, self.H) if self.H is not None else pt
+        # 간격 분석
+        for (c1x, _), (c2x, _) in zip(centers, centers[1:]):
+            gap = c2x - c1x
+            if gap > 100:   # 픽셀 단위 gap 최소치 (현장 튜닝 필요)
+                gap_center = (c1x + c2x)//2
+                goal_world = p2w(gap_center, frame.shape[0]//2)[:2]
+                return goal_world, None, 'gap'
+
+        # gap 못 찾음
+        return None, None, 'gap'
