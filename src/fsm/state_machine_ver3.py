@@ -22,11 +22,14 @@ class DetectionWorker(threading.Thread):
     def __init__(self, capture, detectors: dict, out_q, event):
         super().__init__(daemon=True)
         self.capture = capture
-        self.detectors = detectors
+        self.detectors = list(detectors.items())  # [('coco', model), ('custom', model)]
         self.out_q = out_q
         self.event = event
         self.failure_count = 0
+        self.det_index = 0  # alternating index
         self.logger = logging.getLogger(__name__)
+
+        self.prev_results = {}  # coco와 custom 결과 유지
 
     def run(self):
         while True:
@@ -36,6 +39,7 @@ class DetectionWorker(threading.Thread):
                 self.logger.error(f"Frame capture exception: {e}")
                 time.sleep(0.5)
                 continue
+
             if not ret or frame is None:
                 self.failure_count += 1
                 if self.failure_count > 50 and hasattr(self.capture, 'reopen'):
@@ -47,18 +51,19 @@ class DetectionWorker(threading.Thread):
                     self.failure_count = 0
                 time.sleep(0.01)
                 continue
+
             self.failure_count = 0
-            detections = {
-                name: detector.detect(frame)
-                for name, detector in self.detectors.items()
-            }
+            name, detector = self.detectors[self.det_index]
+            det_result = detector.detect(frame)
+            self.prev_results[name] = det_result  # 결과 저장
+
+            self.det_index = (self.det_index + 1) % len(self.detectors)
             try:
-                self.out_q.put_nowait((frame.copy(), detections))
+                self.out_q.put_nowait((frame.copy(), self.prev_results.copy()))
             except queue.Full:
                 _ = self.out_q.get_nowait()
-                self.out_q.put_nowait((frame.copy(), detections))
+                self.out_q.put_nowait((frame.copy(), self.prev_results.copy()))
             self.event.set()
-
 
 class StateMachine:
     def __init__(self, cfg, frame_capture, yolo_detectors, monodepth_estimator,
@@ -96,15 +101,31 @@ class StateMachine:
             self.new_det_event.clear()
             frame, detections = self.det_q.get()
 
-            self.ui.show_status(f"State: {self.state.name}")
-            for model_dets in detections.values():
-                for det in model_dets:
-                    x1, y1, x2, y2 = det['bbox']
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            #self.ui.show_status(f"State: {self.state.name}")
+            for name, det_list in detections.items():
+                color = (255, 0, 0) if name == "coco" else (0, 255, 0)
+                for det in det_list:
+                    x1, y1, x2, y2 = det["bbox"]
+                    conf = det["confidence"]
+                    label = name.upper()
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(frame, f"{label}:{conf:.2f}", (x1, y1 - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
             cv2.imshow("Detection", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 self.logger.info("User pressed 'q' to cancel parking")
                 break
+
+            new_pos = self.ctrl.update_navigation()
+            if new_pos is not None:
+                self.current_pos = new_pos
+            self.ctrl.update_steering()
+
+            if self.ctrl.is_busy:
+                if new_pos is not None:
+                    self.current_pos = new_pos 
+                continue
 
             if self.state == State.SEARCH:
                 self._search_step(frame)
@@ -144,21 +165,21 @@ class StateMachine:
     def _navigate_step(self, detections):
         if self.goal_slot is None or self.current_pos is None:
             self.logger.error("[NAVIGATE] goal_slot 또는 current_pos가 None입니다. NAVIGATE 중단")
-            self.state = State.SEARCH  # 안전하게 초기화 상태로 돌리기
+            self.state = State.SEARCH
             return
+
         self.wait_count = 0
 
-        # custom: Monodepth로 거리 기준 판단
+        # 장애물 체크
         for det in detections.get("custom", []):
             depth = self.depth_estimator.estimate_depth(det["bbox"])
             if depth is not None and depth < self.cfg.get("obstacle_distance_threshold", 0.5):
                 self.ctrl.stop()
                 self.logger.info(f"[Obstacle-Custom] depth={depth:.2f}m → WAIT 상태")
-                self.state = State.WAIT
+                self.state = State.OBSTACLE_AVOID
                 return
 
         frame_height = self.capture.height if hasattr(self.capture, 'height') else 480
-        # coco: 화면 내 비율 기준 판단
         for det in detections.get("coco", []):
             x1, y1, x2, y2 = det["bbox"]
             box_height = y2 - y1
@@ -170,38 +191,57 @@ class StateMachine:
 
         dx = self.goal_slot[0] - self.current_pos[0]
         dy = self.goal_slot[1] - self.current_pos[1]
-        dist = (dx**2 + dy**2) ** 0.5
+        dist = (dx**2 + dy**2)**0.5
+        print(f"[NAVIGATE] 현재 위치: {self.current_pos} / 목표 위치: {self.goal_slot} / 거리: {dist:.3f}m")
 
         if dist < self.cfg.get("final_approach_threshold", 0.3):
+            self.logger.info(f"[NAVIGATE] FINAL_APPROACH 거리 도달 (dist={dist:.2f}) → 상태 전환")
             self.state = State.FINAL_APPROACH
             return
 
-        target_pos = self.planner.pid_step(self.current_pos, self.goal_slot)
-        self.ctrl.navigate_to(self.current_pos, target_pos)
-        MIN_MOVEMENT_THRESHOLD = 0.01  # 1cm 이상 움직였을 경우만 업데이트
-
         prev_pos = self.current_pos
         target_pos = self.planner.pid_step(prev_pos, self.goal_slot)
-        self.ctrl.navigate_to(prev_pos, target_pos)
 
-        dx = target_pos[0] - prev_pos[0]
-        dy = target_pos[1] - prev_pos[1]
-        dist_cmd = (dx**2 + dy**2) ** 0.5
+        dx_cmd = target_pos[0] - prev_pos[0]
+        dy_cmd = target_pos[1] - prev_pos[1]
+        dist_cmd = (dx_cmd**2 + dy_cmd**2)**0.5
+        MIN_MOVEMENT_THRESHOLD = 0.01  # 1cm
 
-        # 움직임이 명령 대비 충분히 작다면 실제 위치 갱신하지 않음
-        if dist_cmd >= MIN_MOVEMENT_THRESHOLD:
-            self.current_pos = target_pos
-            self.logger.debug(f"[NAVIGATE] 위치 갱신: {self.current_pos}")
-        else:
-            self.logger.warning("[NAVIGATE] 이동 명령 대비 위치 갱신 생략: 움직임 감지 안됨")
+        if dist_cmd < MIN_MOVEMENT_THRESHOLD:
+            self.logger.warning("[NAVIGATE] 이동 명령 너무 작음 → 명령 생략")
+            return
+
+        if hasattr(self, "last_pos"):
+            dir_prev = np.array(prev_pos) - np.array(self.last_pos)
+            dir_now = np.array(target_pos) - np.array(prev_pos)
+            dot = np.dot(dir_prev, dir_now)
+            if dot < -0.001:  # 음의 내적이면 반대방향
+                self.logger.warning("[NAVIGATE] 왕복 반복 감지 → 명령 무시")
+                return
+
+        # 이동 명령
+        self.ctrl.navigate_to(prev_pos, target_pos) 
+        self.last_nav_target = target_pos
+        print(f"[NAVIGATE] 위치 갱신: {self.current_pos} / 거리: {dist:.2f}m")
+
 
     def _wait_step(self):
-        print("[WAIT] 장애물 감지로 정지. 2초 대기 후 상태 재확인...")
-        time.sleep(2)
+        now = time.time()
 
+        # 처음 진입했을 때 시간 저장
+        if not hasattr(self, "wait_start_time"):
+            self.wait_start_time = now
+            print("[WAIT] 장애물 감지로 정지. 2초 대기 시작...")
+            self.ctrl.stop()  # 모터 정지
+            return
+        
+        if now - self.wait_start_time < 1.0:
+            return
+        
         ret, frame = self.capture.read()
         if not ret or frame is None:
             print("[WAIT] 프레임 없음. 다시 대기.")
+            self.wait_start_time = now
             return
 
         detections = {
@@ -210,30 +250,38 @@ class StateMachine:
         }
 
         frame_height = frame.shape[0]
+        obstacle_detected = False
 
         for det in detections.get("custom", []):
             depth = self.depth_estimator.estimate_depth(det["bbox"])
+            print(f"[DEBUG] bbox={det['bbox']}, depth={depth}")
             if depth is not None and depth < self.cfg.get("obstacle_distance_threshold", 0.5):
                 self.wait_count += 1
                 print(f"[WAIT] 가까운 custom 객체 존재 → 대기 누적 {self.wait_count}회")
-                if self.wait_count >= 5:
-                    print("[WAIT] 장애물 고정으로 판단 → OBSTACLE_AVOID 전환")
-                    self.state = State.OBSTACLE_AVOID
-                return
+                obstacle_detected = True
+                break
 
-        for det in detections.get("coco", []):
-            x1, y1, x2, y2 = det["bbox"]
-            if (y2 - y1) / frame_height > self.cfg.get("obstacle_height_ratio_threshold", 0.5):
-                self.wait_count += 1
-                print(f"[WAIT] 큰 COCO 객체 존재 → 대기 누적 {self.wait_count}회")
-                if self.wait_count >= 5:
-                    print("[WAIT] 장애물 고정으로 판단 → OBSTACLE_AVOID 전환")
-                    self.state = State.OBSTACLE_AVOID
-                return
+        if not obstacle_detected:
+            for det in detections.get("coco", []):
+                x1, y1, x2, y2 = det["bbox"]
+                if (y2 - y1) / frame_height > self.cfg.get("obstacle_height_ratio_threshold", 0.7):
+                    self.wait_count += 1
+                    print(f"[WAIT] 큰 COCO 객체 존재 → 대기 누적 {self.wait_count}회")
+                    obstacle_detected = True
+                    break
 
-        print("[WAIT] 장애물 사라짐 → NAVIGATE 복귀 및 대기 회수 초기화")
-        self.wait_count = 0
-        self.state = State.NAVIGATE
+        if obstacle_detected:
+            if self.wait_count >= 5:
+                print("[WAIT] 장애물 고정으로 판단 → OBSTACLE_AVOID 전환")
+                self.state = State.OBSTACLE_AVOID
+                del self.wait_start_time  # 초기화
+            else:
+                self.wait_start_time = now  # 다시 대기 시작
+        else:
+            print("[WAIT] 장애물 사라짐 → NAVIGATE 복귀")
+            self.wait_count = 0
+            self.state = State.NAVIGATE
+            del self.wait_start_time  # 초기화
 
     def _avoid_step(self):
         try:
@@ -257,7 +305,15 @@ class StateMachine:
                 self.cfg['clearance'], bounds
             )
 
-            self.logger.info("[AVOID] 회피 경로 재계획 완료 → NAVIGATE 전환")
+            print("[AVOID] 회피 경로: ", self.path)
+
+            for waypoint in self.path:
+                wp = waypoint[:2] if len(waypoint) > 2 else waypoint
+                self.ctrl.navigate_to(self.current_pos[:2], wp)
+                print(f"[AVOID] Waypoint 이동: {wp}")
+                self.current_pos = wp  # 위치 갱신
+
+            print("[AVOID] 경로 이동 완료 → NAVIGATE 복귀")
             self.state = State.NAVIGATE
 
         except queue.Empty:
