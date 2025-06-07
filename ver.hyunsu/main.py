@@ -1,111 +1,56 @@
-import yaml
-import logging
-from camera.capture import FrameCapture
-from vision.yolo_detector import YOLODetector
+import os, yaml, logging, numpy as np
+from camera.capture           import FrameCapture
+from vision.yolo_detector     import YOLODetector
 from vision.monodepth_estimator import MonoDepthEstimator
-from vision.slot_allocator import SlotAllocator
-from navigation.path_planner import PathPlanner
-from navigation.controller import Controller
-from camera.pan_tilt_control import PanTiltController
-from interface.user_io import UserIO
-from fsm.state_machine_ver3 import StateMachine
-import time
+from vision.goal_setter       import GoalSetter
+from navigation.path_planner  import PathPlanner
+from navigation.controller    import Controller
+from camera.pan_tilt_control  import PanTiltController
+from interface.user_io        import UserIO
+from fsm.state_machine_hyunsu import StateMachine
 
-def load_config(path='/home/pi/autopark/config/config.yaml'):
-    # UTF-8로 파일을 읽어 cp949 디코딩 오류 방지
+
+def load_config(path='config/config.yaml'):
     with open(path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
-
 def setup_logging():
-    logging.basicConfig(
-        level=logging.INFO,
-        format='[%(asctime)s] %(levelname)s:%(name)s: %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+    logging.basicConfig(level=logging.INFO,
+                        format='[%(asctime)s] %(levelname)s:%(name)s: %(message)s',
+                        datefmt='%Y-%m-%d %H:%M:%S')
+    logging.getLogger('matplotlib').setLevel(logging.ERROR)
 
-
-def main():
-    # 1. 설정 로드 및 로깅 초기화
+def main() -> None:
     cfg = load_config()
     setup_logging()
-    logger = logging.getLogger(__name__)
-    logger.info('Starting PI AutoPark')
+    log = logging.getLogger(__name__)
+    log.info('=== PI-AutoPark 시작 ===')
 
-    # 2. 컴포넌트 인스턴스 생성
-    frame_capture = FrameCapture(
-        source=cfg['camera']['source'],
-        image_folder=cfg['camera']['image_folder'],
-        loop=cfg['camera']['loop']
-    )
-    # YOLODetector는 config 파일 내 값을 읽어 초기화합니다
-    yolo_coco = YOLODetector(weights_path=cfg['yolo']['coco_weights'])
-    yolo_custom = YOLODetector(weights_path=cfg['yolo']['custom_weights'])
-        # MonoDepthEstimator는 config 파일에서 설정을 로드하여 초기화합니다
-    depth = MonoDepthEstimator()
-        # SlotAllocator는 픽셀 좌표 리스트만 전달합니다
-    allocator = SlotAllocator(
-        cfg['slot_area_coords']
-    )
-        # PathPlanner는 segment 개수만 전달합니다
-    planner = PathPlanner(
-        cfg['path_segments']
-    )
-    controller = Controller()
-    pan_tilt = PanTiltController()
-    ui = UserIO()
-    yolo_detectors = {
-        "coco": yolo_coco,
-        "custom": yolo_custom
-    }
-    # 3. 상태 머신 실행
-    sm = StateMachine(cfg,
-                  frame_capture,
-                  yolo_detectors=yolo_detectors,
-                  monodepth_estimator=depth,
-                  slot_allocator=allocator,
-                  path_planner=planner,
-                  controller=controller,
-                  pan_tilt_controller=pan_tilt,
-                  user_io=ui)
+    # ―――― Vision ――――
+    cap = FrameCapture(**cfg['camera'])
+    yolo_custom = YOLODetector(weights_path=cfg['yolo']['custom_weights'],
+                               conf_thres=cfg['yolo']['conf_thres'],
+                               iou_thres=cfg['yolo']['iou_thres'])
+    yolo_coco   = YOLODetector(weights_path=cfg['yolo']['coco_weights'],
+                               conf_thres=cfg['yolo']['conf_thres'],
+                               iou_thres=cfg['yolo']['iou_thres'])
+    detectors = {'custom': yolo_custom, 'coco': yolo_coco}
+    depth     = MonoDepthEstimator()
+
+    # ―――― Homography (픽셀→월드) ――――
+    H = np.load('config/camera_params.npz')['homography_matrix'] \
+        if os.path.exists('config/camera_params.npz') else np.eye(3)
+    goal_setter = GoalSetter(min_gap=80, homography=H)
+
+    # ―――― Navigation ――――
+    planner    = PathPlanner(step_size=0.15)
+    controller = Controller(**cfg['controller'])
+    pan_tilt   = PanTiltController(**cfg['pan_tilt'])
+    ui         = UserIO()
+
+    sm = StateMachine(cfg, cap, detectors, depth,
+                      goal_setter, planner, controller, pan_tilt, ui)
     sm.run()
-    
-if __name__ == '__main__':
-    main()
-
-
-'''
-import logging
-import sys
-
-from interface.user_io import UserIO
-from fsm.state_machine import StateMachine
-
-def main():
-    # 1) 로그 설정
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%H:%M:%S"
-    )
-    logger = logging.getLogger(__name__)
-    logger.info("AutoPark 시작")
-
-    # 2) 사용자 입력: Enter 로 시작, q 로 종료
-    ui = UserIO()
-    ui.prompt_start()
-
-    # 3) FSM 초기화 & 실행
-    try:
-        sm = StateMachine(config_path="config/config.yaml")
-        sm.run()   # 여기에 캡처→검출→화면→키 이벤트 루프 전부 들어있습니다
-    except KeyboardInterrupt:
-        logger.info("사용자에 의해 중단됨")
-        sys.exit(0)
-    except Exception as e:
-        logger.exception(f"예기치 못한 오류 발생: {e}")
-        sys.exit(1)
 
 if __name__ == '__main__':
     main()
-'''

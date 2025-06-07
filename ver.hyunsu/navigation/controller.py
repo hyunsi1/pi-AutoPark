@@ -136,3 +136,56 @@ class Controller:
         self.stop()
         GPIO.cleanup()
         print("[Cleanup] GPIO 정리 완료")
+
+if __name__ == "__main__":
+    import time
+    import logging
+
+    logging.basicConfig(level=logging.INFO)
+    ctrl = None
+
+    try:
+        ctrl = Controller()
+
+        print("1. 직진 테스트")
+        ctrl.navigate("forward", speed=30)
+        time.sleep(2)
+        ctrl.stop()
+        time.sleep(1)
+
+        print("2. 좌회전 테스트")
+        ctrl.navigate("left", speed=20)
+        time.sleep(2)
+        ctrl.stop()
+        time.sleep(1)
+
+        print("3. 우회전 테스트")
+        ctrl.navigate("right", speed=20)
+        time.sleep(2)
+        ctrl.stop()
+        time.sleep(1)
+
+        print("4. 후진 테스트")
+        ctrl.navigate("backward", speed=20)
+        time.sleep(2)
+        ctrl.stop()
+        time.sleep(1)
+
+        print("5. 임의 좌표로 이동 테스트")
+        cur_pos = (0, 0)
+        target_pos = (10, 10)
+        ctrl.navigate_to(cur_pos, target_pos)
+        time.sleep(2)
+        ctrl.stop()
+
+        print("6. 핸들 중앙 정렬 테스트")
+        ctrl.set_angle(ctrl.ANGLE_FORWARD)
+        time.sleep(1)
+
+        print("모든 테스트 완료")
+
+    except KeyboardInterrupt:
+        print("사용자 강제 중단")
+    finally:
+        if ctrl is not None:
+            ctrl.cleanup()
