@@ -60,7 +60,7 @@ def warp_point(pt, H):
     warped /= warped[2]
     return float(warped[0]), float(warped[1])
 
-def pixel_to_world(x_pixel, y_pixel, homography_matrix):
+def pixel_to_world(x_pixel, y_pixel, homography_matrix, scale=0.002):
     """
     픽셀 좌표를 월드 좌표로 변환하는 함수 예시
 
@@ -78,4 +78,4 @@ def pixel_to_world(x_pixel, y_pixel, homography_matrix):
     world_point = homography_matrix @ pixel_point
     world_point /= world_point[2]
 
-    return world_point[0], world_point[1]
+    return world_point[0]*scale, world_point[1]*scale
