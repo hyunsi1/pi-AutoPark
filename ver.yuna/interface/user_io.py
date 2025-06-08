@@ -46,7 +46,6 @@ class UserIO:
     def wait_cancel(self, timeout: float):
         """
         취소 요청 대기 (timeout 초 내에 q 입력 시 True 반환)
-        안내 메시지는 한 번만 출력합니다.
         """
         if timeout > 0:
             print(f"{timeout:.1f}초 내에 주차를 취소하려면 q + Enter를 누르세요.")
