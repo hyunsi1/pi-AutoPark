@@ -96,6 +96,7 @@ class StateMachine:
         self.state = State.SEARCH
         self.goal_slot = None
         self.current_pos = None
+        self._fa_initialized = False
         self.logger = logging.getLogger(__name__)
         self.wait_count = 0
 
@@ -395,38 +396,52 @@ class StateMachine:
         dx = self.goal_slot[0] - self.current_pos[0]
         dy = self.goal_slot[1] - self.current_pos[1]
         dist = math.hypot(dx, dy)
+        tol  = self.cfg.get('park_tolerance', 0.05)
+        step = min(self.cfg.get('final_step_size', 0.1), dist)
 
-        # tilt down을 한번만 호출하도록 처리
-        if not hasattr(self, '_tilted_down') or not self._tilted_down:
-            final_angle = self.cfg['pan_tilt'].get('final_tilt_angle', 10)
-            self.pan_tilt.set_tilt(final_angle)
-            self._tilted_down = True
-            self.logger.info(f"[FINAL_APPROACH] Tilting down to {final_angle}°")
+        # 2) 최초 진입 시: 카메라 틸트 + 조향 서보를 슬롯 왼쪽 에지와 평행하게 맞추기
+        if not self._fa_initialized:
+            # 2.1) 카메라 틸트 다운
+            tilt_angle = self.cfg['pan_tilt'].get('final_tilt_angle', 10)
+            self.pan_tilt.set_tilt(tilt_angle)
 
-        # 목표 위치에 도달 시: 주차 완료
-        tol = self.cfg.get('park_tolerance', 0.05)
-        if dist < tol:
-            stop_angle = self.cfg.get('stop_steering_angle', 90)
-            self.ctrl.start_steering(stop_angle)
-            self.ctrl.stop()
-            self.pan_tilt.reset()
+            # 2.2) 슬롯 픽셀 4개 코너 (search 단계에서 self.area_px에 저장)
+            tl_px, tr_px, br_px, bl_px = self.area_px  # [(x,y),...]
 
-            self.logger.info(f"[FINAL_APPROACH] Parking completed within {tol}m")
-            self.state = State.COMPLETE
+            # 왼쪽 에지 벡터
+            edg_dx = bl_px[0] - tl_px[0]
+            edg_dy = bl_px[1] - tl_px[1]
+            img_angle = math.degrees(math.atan2(edg_dy, edg_dx))
+            phys_angle = img_angle - 90
+            steer_ang = self.ctrl.map_physical_angle_to_servo(phys_angle)
+
+            # 서보 조향
+            self.ctrl.set_angle(steer_ang)
+
+            # 플래그 설정
+            self._fa_steer_ang    = steer_ang
+            self._fa_initialized = True
+
+            self.logger.info(f"[FINAL_APPROACH] Tilt={tilt_angle}°, aligned steer={steer_ang:.1f}°")
+
+        # 3) 목표에 도달 전: 스텝만큼 전진
+        if dist >= tol:
+            ux, uy = dx / dist, dy / dist
+            new_pos = (
+                self.current_pos[0] + ux * step,
+                self.current_pos[1] + uy * step
+            )
+            self.ctrl.navigate_to(self.current_pos, new_pos)
+            self.current_pos = new_pos
+            self.logger.info(f"[FINAL_APPROACH] Step to {new_pos}, step_size={step:.2f}m")
             return
 
-        # 최종 접근: 세밀한 이동
-        step = min(self.cfg.get('final_step_size', 0.1), dist)
-        ux, uy = dx / dist, dy / dist
-        target_pos = (
-            self.current_pos[0] + ux * step,
-            self.current_pos[1] + uy * step
-        )
-
-        self.ctrl.navigate_to(self.current_pos, target_pos)
-        self.current_pos = target_pos
-
-        self.logger.info(f"[FINAL_APPROACH] Moving towards {target_pos} with step size {step:.3f}m")
+        # 4) 목표 도달: 평행 조향 유지 + 정지
+        self.ctrl.set_angle(self._fa_steer_ang)
+        self.ctrl.stop()
+        self.pan_tilt.reset()
+        self.logger.info(f"[FINAL_APPROACH] Parked with steering={self._fa_steer_ang:.1f}°")
+        self.state = State.COMPLETE
 
     def _complete_step(self):
         """Handle completion of the parking task."""
