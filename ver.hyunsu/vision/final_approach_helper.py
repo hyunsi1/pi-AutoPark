@@ -48,7 +48,7 @@ def steering_and_offset(line, ctrl, w_des_px=60):
     k = 0.1                             # 보정 계수(튜닝)
     physical_corr = k * err             # 픽셀→°(근사)
     servo = ctrl.map_physical_angle_to_servo((angle_deg+physical_corr)/2)
-    return np.clip(servo, 0, 180)
+    return np.clip(servo, 30, 100)
 # ──────────────────────────────────────────────────
 def front_reference_gone(frame) -> bool:
     """
