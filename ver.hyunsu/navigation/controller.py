@@ -15,7 +15,7 @@ class Controller:
         # 각도 정의
         self.ANGLE_LEFT = 100
         self.ANGLE_RIGHT = 30
-        self.ANGLE_FORWARD = 60
+        self.ANGLE_FORWARD = 65
 
         # I2C 보드 초기화
         self.board = Board(i2c_bus, addr)
@@ -37,6 +37,19 @@ class Controller:
         self.set_angle(self.ANGLE_FORWARD)
         self.stop()
         print(f"[Init] steer={steer_channel}, in1={in1_channel}, in2={in2_channel}, ena={ena_gpio}")
+
+        self.is_steering = False
+        self.is_moving = False
+        self.last_target_pos = None
+        self.steer_start_time = 0
+        self.move_start_time = 0
+        self.pending_speed = 0
+        self.move_duration = 0.5
+
+    @property
+    def is_busy(self):
+        return self.is_steering or self.is_moving
+
 
     def set_angle(self, angle, delay=0.3):
         """서보 각도 설정 + PWM 주파수 전환"""
@@ -108,7 +121,7 @@ class Controller:
 
     def map_physical_angle_to_servo(self, physical_angle_deg):
         """-45~+45도 물리 각도를 30~100의 서보각으로 변환"""
-        servo_angle = (physical_angle_deg + 45) * (100 - 30) / 90 + 30
+        servo_angle = physical_angle_deg + 65
         return servo_angle
 
     def navigate_to(self, cur_pos, target_pos):
@@ -130,6 +143,35 @@ class Controller:
         self.set_angle(steering_angle)
         self.set_speed(30)
         print(f"[NavigateTo] {cur_pos} -> {target_pos} : steering_angle={steering_angle:.1f}")
+
+    def update_navigation(self):
+        if self.is_steering:
+            if self.update_steering():
+                self.set_speed(self.pending_speed)  
+                self.move_start_time = time.time()  
+                self.is_moving = True
+        elif self.is_moving:
+            if time.time() - self.move_start_time >= self.move_duration:
+                self.stop()  
+                self.is_moving = False
+                logging.debug("[UpdateNavigation] movement complete")
+                return self.last_target_pos
+        return None
+
+    def update_steering_and_navigation(self):
+        if self.is_steering:
+            self.update_steering()
+
+        if self.is_moving:
+            self.update_navigation()
+
+    def update_steering(self):
+        if self.is_steering and time.time() - self.steer_start_time >= 0.3:  
+            self.is_steering = False
+            logging.debug("[UpdateSteering] completed")
+            return True
+        return False    
+
 
     def cleanup(self):
         """GPIO 정리"""
