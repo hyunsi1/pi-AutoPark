@@ -131,5 +131,36 @@ def main():
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
+def main_webcam():
+    cap = cv2.VideoCapture(0)
+
+    if not cap.isOpened():
+        print("Cannot open webcam.")
+        return
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to read frame.")
+            break
+
+        # Detection
+        goal_world, corners, dist, vis_img = find_black_rect(frame)
+
+        if goal_world:
+            print(f"Top-left corner: {goal_world}")
+            print(f"Corners: {corners}")
+            print(f"Distance: {dist:.2f} m")
+        else:
+            print("No rectangle detected.")
+
+        cv2.imshow("Detection Result", vis_img)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
 if __name__ == "__main__":
-    main()
+    main_webcam()
