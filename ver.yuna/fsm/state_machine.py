@@ -138,13 +138,13 @@ class StateMachine:
             if self.state == State.SEARCH:
                 self._search_step(frame)
             elif self.state == State.NAVIGATE:
-                self._navigate_step(detections)
+                self._navigate_step(frame, detections)
             elif self.state == State.OBSTACLE_AVOID:
-                self._avoid_step()
+                self._avoid_step(frame, detections)
             elif self.state == State.WAIT:
                 self._wait_step()
             elif self.state == State.FINAL_APPROACH:
-                self._final_approach_step(detections)
+                self._final_approach_step(frame, detections)
             elif self.state == State.COMPLETE:
                 self._complete_step()
                 break
@@ -272,66 +272,60 @@ class StateMachine:
         self.ctrl.navigate_to(prev, target)
         self.logger.info(f"[NAVIGATE] Moving towards target: {target}")
 
-    def _avoid_step(self):
-        """Handle obstacle avoidance by scanning and re-planning the path."""
-        # 장애물 회피를 위한 스캔 설정
-        scan_cfg    = self.cfg.get('avoid', {})
-        # steering scan 각도 리스트 (없으면 좌/우 기본값 사용)
-        scan_angles = scan_cfg.get(
+    def _avoid_step(self, frame, detections):
+        scan_cfg = self.cfg.get('avoid', {})
+        scan_angles   = scan_cfg.get(
             'steer_scan_angles',
             [self.ctrl.ANGLE_LEFT, self.ctrl.ANGLE_RIGHT]
         )
-        scan_delay  = scan_cfg.get('pan_scan_delay', 0.2)
+        scan_delay    = scan_cfg.get('steer_scan_delay', 0.2)
+        center_angle  = scan_cfg.get('steer_center_angle', self.ctrl.ANGLE_FORWARD)
 
-        # 1) 조향 서보로 좌→우 스캔
         for ang in scan_angles:
             self.ctrl.set_angle(ang)
             time.sleep(scan_delay)
 
-        # 2) 조향을 중앙(직진)으로 복귀
-        self.ctrl.set_angle(self.ctrl.ANGLE_FORWARD)
+        self.ctrl.set_angle(center_angle)
 
         try:
-            # 장애물 감지 및 경로 재계획
             frame, detections = self.det_q.get(timeout=1.0)
-            custom_dets = detections.get('custom', [])
         except queue.Empty:
-            self.logger.warning("[AVOID] No detection data found, returning to NAVIGATE.")
+            self.logger.warning("[AVOID] No detection data, returning to NAVIGATE.")
             self.state = State.NAVIGATE
             return
 
-        # custom 객체가 없으면 다시 NAVIGATE 상태로 전환
+        custom_dets = detections.get('custom', [])
         if not custom_dets:
             self.logger.info("[AVOID] No obstacles detected, returning to NAVIGATE.")
             self.state = State.NAVIGATE
             return
 
-        # 첫 번째 장애물의 중심 위치 계산
         x1, y1, x2, y2 = custom_dets[0]['bbox']
-        obs_px = ((x1 + x2) / 2, (y1 + y2) / 2)
+        obs_px   = ((x1 + x2) / 2, (y1 + y2) / 2)
         obs_world = self.p2w(*obs_px)[:2]
 
-        # 경로 재계획: 장애물을 피하기 위해 새로운 경로를 계산
-        clearance = scan_cfg.get('clearance_pixels', 50)  # 장애물 회피를 위한 여유 거리
-        bounds = np.array(self.area_world)  # 주차 구역 영역
-        waypoints = self.planner.replan_around(self.current_pos, self.goal_slot, obs_world, clearance, bounds)
-        self.logger.info(f"[AVOID] New path generated: {waypoints}")
+        clearance = scan_cfg.get('clearance_pixels', 50)
+        bounds    = np.array(self.area_world)
+        waypoints = self.planner.replan_around(
+            self.current_pos,
+            self.goal_slot,
+            obs_world,
+            clearance,
+            bounds
+        )
+        self.logger.info(f"[AVOID] New path: {waypoints}")
 
-        # 경로를 따라 순차적으로 이동
         for wp in waypoints:
-            pos = wp[:2]
-            self.ctrl.navigate_to(self.current_pos, pos)
-
+            target = wp[:2]
+            self.ctrl.navigate_to(self.current_pos, target)
             # 이동 완료 대기
             while not self.ctrl.update_navigation():
                 time.sleep(0.01)
-            
-            self.current_pos = pos
+            self.current_pos = target
 
-        # 경로 탐색 후, 카메라를 중앙으로 복귀
-        self.pan_tilt.set_pan(90)
+        self.ctrl.set_angle(center_angle)
         self.state = State.NAVIGATE
-        self.logger.info("[AVOID] Path avoidance complete, transitioning to NAVIGATE.")
+        self.logger.info("[AVOID] Path avoidance complete → NAVIGATE")
 
     def _wait_step(self):
         """Handle WAIT state when an obstacle is detected."""
@@ -393,7 +387,7 @@ class StateMachine:
         else:
             self.logger.info("[WAIT] Obstacle detected. Continuing to wait.")
 
-    def _final_approach_step(self, detections):
+    def _final_approach_step(self, frame, detections):
         """Handle final approach for precise parking."""
         self.wait_count = 0
 
