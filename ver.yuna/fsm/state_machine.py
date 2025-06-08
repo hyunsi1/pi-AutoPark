@@ -129,6 +129,11 @@ class StateMachine:
 
             frame, detections = self.det_q.get()
 
+            cv2.imshow("Live Feed", frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                self.logger.info("User pressed q → exiting")
+                break
+
             # 상태에 따라 다른 처리를 담당하는 메서드 호출
             if self.state == State.SEARCH:
                 self._search_step(frame)
@@ -189,31 +194,44 @@ class StateMachine:
         self.state = State.NAVIGATE
         self.logger.info("[SEARCH] Transitioning to NAVIGATE")
 
-
-    def _navigate_step(self, detections):
-        if self.goal_slot is None or self.current_pos is None:
-            self.logger.error("[NAVIGATE] Missing goal_slot or current_pos.")
-            self.state = State.SEARCH
-            return
-
-        self.wait_count = 0
-
-        # 장애물 처리
+    def _navigate_step(self, frame, detections):
+        # 1) 장애물 체크
         for det in detections.get("custom", []):
             if self._is_obstacle_too_close(det):
                 self.state = State.OBSTACLE_AVOID
                 return
 
-        direction = self.planner.plan(self.current_pos[0], self.current_pos[1], frame_height=detections["frame_height"])
-
+        # 2) 방향 결정 (필요하다면 방향 정보 사용)
+        frame_h   = frame.shape[0]
+        direction = self.planner.plan(self.current_pos[0], self.current_pos[1],
+                                    frame_height=frame_h)
         if direction == "stop":
-            self.logger.info("[NAVIGATE] Stop moving, obstacle detected")
             self.state = State.OBSTACLE_AVOID
             return
-        elif direction == "forward":
-            self._perform_navigation()
-        elif direction == "left" or direction == "right":
-            self._perform_navigation()
+
+        self._perform_navigation()
+
+        custom = detections.get("custom", [])
+        if custom:
+            best     = max(custom, key=lambda d: (d['bbox'][2]-d['bbox'][0]) *
+                                        (d['bbox'][3]-d['bbox'][1]))
+            _, _, _, y2 = best['bbox']
+            self.current_pos = self.depth_estimator.estimate_current_position_from_y2(y2)
+        else:
+            prev   = self.current_pos
+            target = self.planner.pid_step(prev, self.goal_slot)
+            dx, dy = target[0]-prev[0], target[1]-prev[1]
+            dist   = math.hypot(dx, dy)
+            if dist > 1e-6:
+                ux, uy = dx/dist, dy/dist
+                step   = self.cfg.get("movement_step", 0.1)
+                self.current_pos = (prev[0]+ux*step, prev[1]+uy*step)
+
+        # 5) 최종 접근 판정
+        dxg, dyg = self.goal_slot[0]-self.current_pos[0], self.goal_slot[1]-self.current_pos[1]
+        if math.hypot(dxg, dyg) < self.cfg.get("final_approach_threshold", 0.3):
+            self.state = State.FINAL_APPROACH
+            self.logger.info("[NAVIGATE] → FINAL_APPROACH")
 
     def _is_obstacle_too_close(self, detection):
         """Check if detected object is too close."""
@@ -257,17 +275,21 @@ class StateMachine:
     def _avoid_step(self):
         """Handle obstacle avoidance by scanning and re-planning the path."""
         # 장애물 회피를 위한 스캔 설정
-        scan_cfg = self.cfg.get('avoid', {})
-        scan_angles = scan_cfg.get('pan_scan_angles', [60, 120])  # 회전 각도 (선회 범위)
-        scan_delay = scan_cfg.get('pan_scan_delay', 0.2)
+        scan_cfg    = self.cfg.get('avoid', {})
+        # steering scan 각도 리스트 (없으면 좌/우 기본값 사용)
+        scan_angles = scan_cfg.get(
+            'steer_scan_angles',
+            [self.ctrl.ANGLE_LEFT, self.ctrl.ANGLE_RIGHT]
+        )
+        scan_delay  = scan_cfg.get('pan_scan_delay', 0.2)
 
-        # 장애물 감지를 위한 회전
-        for angle in scan_angles:
-            self.pan_tilt.set_pan(angle)
+        # 1) 조향 서보로 좌→우 스캔
+        for ang in scan_angles:
+            self.ctrl.set_angle(ang)
             time.sleep(scan_delay)
-        
-        # 중앙 복귀
-        self.pan_tilt.set_pan(scan_cfg.get('pan_center_angle', 90))
+
+        # 2) 조향을 중앙(직진)으로 복귀
+        self.ctrl.set_angle(self.ctrl.ANGLE_FORWARD)
 
         try:
             # 장애물 감지 및 경로 재계획
