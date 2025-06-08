@@ -1,4 +1,4 @@
-import os, yaml, logging, numpy as np
+import os, yaml, logging, cv2, numpy as np
 from camera.capture           import FrameCapture
 from vision.yolo_detector     import YOLODetector
 from vision.monodepth_estimator import MonoDepthEstimator
@@ -13,6 +13,13 @@ from fsm.state_machine_hyunsu import StateMachine
 def load_config(path='config/config.yaml'):
     with open(path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
+    
+def load_camera_parameters(path='config/logitech_c270_out.yaml'):
+    fs = cv2.FileStorage(path, cv2.FILE_STORAGE_READ)
+    cam_mtx = fs.getNode("camera_matrix").mat()
+    dist_coefs = fs.getNode("distortion_coefficients").mat()
+    fs.release()
+    return cam_mtx, dist_coefs
 
 def setup_logging():
     logging.basicConfig(level=logging.INFO,
@@ -24,10 +31,17 @@ def main() -> None:
     cfg = load_config()
     setup_logging()
     log = logging.getLogger(__name__)
+
+    cam_mtx, dist_coefs = load_camera_parameters('config/logitech_c270_out.yaml')
+
     log.info('=== PI-AutoPark 시작 ===')
 
     # ―――― Vision ――――
-    cap = FrameCapture(**cfg['camera'])
+    cap = FrameCapture(
+        source=cfg['camera']['source'],
+        camera_matrix=cam_mtx,
+        dist_coefs=dist_coefs
+    )
     yolo_custom = YOLODetector(weights_path=cfg['yolo']['custom_weights'],
                                conf_thres=cfg['yolo']['conf_thres'],
                                iou_thres=cfg['yolo']['iou_thres'])
