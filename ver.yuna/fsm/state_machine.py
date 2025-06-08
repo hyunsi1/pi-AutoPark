@@ -10,6 +10,7 @@ import os, sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utility.distance import euclidean_distance
 from vision.slot_geometry import find_black_rect_and_distance
+from utility.transformations import pixel_to_world
 
 class State(Enum):
     SEARCH = auto()
@@ -101,7 +102,19 @@ class StateMachine:
         self.det_q = queue.Queue(maxsize=1)
         self.new_det_event = threading.Event()
         self.det_worker = DetectionWorker(self.capture, self.detectors, self.det_q, self.new_det_event)
-        self.det_worker.start()
+        self.det_worker.start()        
+        homography_path = os.path.join(
+            os.path.dirname(__file__), '..', '..', 'config', 'camera_params.npz'
+        )
+        if os.path.exists(homography_path):
+            data = np.load(homography_path)
+            self.homography_matrix = data['homography_matrix']
+        else:
+            logging.warning(f"'{homography_path}' 없음. 단위 행렬 사용.")
+            self.homography_matrix = np.eye(3)
+
+        # 픽셀→월드 변환 함수
+        self.p2w = lambda x, y: pixel_to_world(x, y, self.homography_matrix)
 
     def run(self):
         self.ui.prompt_start()
@@ -141,8 +154,10 @@ class StateMachine:
         top_left, corners, slot_dist, annotated_frame = find_black_rect_and_distance(frame, debug=True)
         if top_left is not None and top_left[0] >= 20 and top_left[1] >= 20:
             # world 좌표 및 목표 거리
-            self.goal_slot     = self.allocator.p2w(*top_left)
+            self.goal_slot     = self.p2w(*top_left)
             self.goal_distance = slot_dist
+            self.area_px    = corners                                # [(x,y),... 순서: TL,TR,BR,BL]
+            self.area_world = [ self.p2w(x,y) for x,y in self.area_px ]
             # current_pos 추정 (y2 = top-left y)
             self.current_pos   = self.depth_estimator.estimate_current_position_from_y2(top_left[1])
             self.logger.info(f"[SEARCH] Slot at {top_left}, distance: {slot_dist:.2f}m, pos: {self.current_pos}")
@@ -272,11 +287,11 @@ class StateMachine:
         # 첫 번째 장애물의 중심 위치 계산
         x1, y1, x2, y2 = custom_dets[0]['bbox']
         obs_px = ((x1 + x2) / 2, (y1 + y2) / 2)
-        obs_world = self.allocator.p2w(*obs_px)[:2]
+        obs_world = self.p2w(*obs_px)[:2]
 
         # 경로 재계획: 장애물을 피하기 위해 새로운 경로를 계산
         clearance = scan_cfg.get('clearance_pixels', 50)  # 장애물 회피를 위한 여유 거리
-        bounds = np.array(self.allocator.area_world)  # 주차 구역 영역
+        bounds = np.array(self.area_world)  # 주차 구역 영역
         waypoints = self.planner.replan_around(self.current_pos, self.goal_slot, obs_world, clearance, bounds)
         self.logger.info(f"[AVOID] New path generated: {waypoints}")
 
