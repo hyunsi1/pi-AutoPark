@@ -25,11 +25,11 @@ class PanTiltController:
         self.reset()
 
     def reset(self):
-        self.servo.move(self.tilt_channel, 0)  
+        self.servo.move(self.tilt_channel, 30)  
         print("[Tilt] 0도 복귀")
 
     def final_step_tilt_down(self):
-        self.servo.move(self.tilt_channel, 30)
+        self.servo.move(self.tilt_channel, 0)
         print("[Tilt] Final Step → 30도 내려감")
 
     def release(self):
@@ -41,11 +41,6 @@ if __name__ == "__main__":
     ctl = PanTiltController(tilt_channel=3)  # 채널 번호를 보드 연결에 맞게 조정
 
     try:
-        for ang in [-30, 0, 30, 60, -60]:
-            pwm_angle = ang + 90
-            ctl.servo.move(ctl.tilt_channel, pwm_angle)
-            print(f"Moved to {ang}° → PWM {pwm_angle}°")
-            time.sleep(1)
         ctl.reset()
         time.sleep(1)
         ctl.final_step_tilt_down()
