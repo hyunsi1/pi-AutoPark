@@ -96,6 +96,7 @@ class StateMachine:
         self.state = State.SEARCH
         self.goal_slot = None
         self.current_pos = None
+        self._avoid_started = False
         self._fa_initialized = False
         self.logger = logging.getLogger(__name__)
         self.wait_count = 0
@@ -274,6 +275,16 @@ class StateMachine:
         self.logger.info(f"[NAVIGATE] Moving towards target: {target}")
 
     def _avoid_step(self, frame, detections):
+        if not self._avoid_started:
+            self._avoid_started = True
+        else:
+            # 이미 처리했으면 바로 NAVIGATE로 복귀
+            self._avoid_started = False
+            self.state = State.NAVIGATE
+            return
+
+        self.ctrl.stop()
+        
         scan_cfg = self.cfg.get('avoid', {})
         scan_angles   = scan_cfg.get(
             'steer_scan_angles',
