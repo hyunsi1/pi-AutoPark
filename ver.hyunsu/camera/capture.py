@@ -30,11 +30,21 @@ class FrameCapture:
         """
         if self.cap:
             ret, frame = self.cap.read()
+            if not ret:
+                return ret, frame
+            # 추가: 왜곡 제거
+            if self.camera_matrix is not None and self.dist_coefs is not None:
+                frame = cv2.undistort(frame, self.camera_matrix, self.dist_coefs, None, self.camera_matrix)
             return ret, frame
         else:
             try:
                 path = next(self.iterator)
                 frame = cv2.imread(str(path))
+                if frame is None:
+                    return False, None
+                # 추가: 왜곡 제거
+                if self.camera_matrix is not None and self.dist_coefs is not None:
+                    frame = cv2.undistort(frame, self.camera_matrix, self.dist_coefs, None, self.camera_matrix)
                 return True, frame
             except StopIteration:
                 return False, None
