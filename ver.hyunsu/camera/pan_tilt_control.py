@@ -38,7 +38,7 @@ class PanTiltController:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    ctl = PanTiltController(tilt_channel=0)  # 채널 번호를 보드 연결에 맞게 조정
+    ctl = PanTiltController(tilt_channel=3)  # 채널 번호를 보드 연결에 맞게 조정
 
     try:
         for ang in [-30, 0, 30, 60, -60]:
