@@ -5,8 +5,9 @@ from utility.transformations import pixel_to_world  # pixel → world 변환 함
 from vision.find_black_rect import find_black_rect 
 
 class GoalSetter:
-    def __init__(self, slot_gap=0.1):
-        self.slot_gap = slot_gap
+    def __init__(self, min_gap=80, homography=None):
+        self.min_gap = min_gap
+        self.homography = homography
 
     def get_goal_point(self, frame, boxes):
         # ① 검정 네모 우선 탐색
@@ -24,7 +25,7 @@ class GoalSetter:
             gap = c2x - c1x
             if gap > 100:
                 gap_center = (c1x + c2x)//2
-                goal_world = pixel_to_world(gap_center, frame.shape[0]//2)[:2]
+                goal_world = pixel_to_world(gap_center, frame.shape[0]//2, self.homography)[:2]
                 return goal_world, None, 'gap'
 
         return None, None, 'gap'
