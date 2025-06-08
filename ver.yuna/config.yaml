@@ -10,49 +10,42 @@ yolo:
   #coco_weights: yolov5n.pt
   #custom_weights: C:/Users/user/OneDrive/Documents/VSCode/pi_AutoPark/yolov5/best5.pt
   coco_weights: /home/pi/autopark/yolov5n.pt
-  custom_weights: /home/pi/autopark/yolov5_weight/best_ver2.pt
-  # 검출 임계값
+  custom_weights: /home/pi/autopark/yolov5_weight/best5.pt
   conf_thres: 0.3
   iou_thres: 0.45
   max_det: 50
 
 monodepth:
-  # 킥보드 실제 세로 길이 (m)
   object_height: 0.3
-  # 카메라 높이 (m)
   camera_height: 0.4
-  # 카메라 틸트 각도 (deg)
   tilt_angle: 0
-  # 'ratio' 또는 'ground_plane'
   method: ratio
 
-# 주차 구역 네 꼭짓점 (화면 픽셀 좌표)
-slot_area_coords:
-  - [100,  50]   # top-left
-  - [540,  50]   # top-right
-  - [540, 370]   # bottom-right
-  - [100, 370]   # bottom-left
+# slot_geometry에서 'slot_area_coords'를 제거하고, 주차 구역을 'detect_parking_slot_by_contour'에서 동적으로 찾도록 함
 
-# 슬롯 간격 (m)
-slot_gap: 0.1
+path_planner:
+  path_segments: 5
 
-# PathPlanner 분할 세그먼트 수
-path_segments: 5
+general:
+  lat0: 37.7749
+  lon0: -122.4194
+  final_approach_threshold: 0.3
 
-controller:
-  max_speed: 1.0           # 전진 최대 속도 (m/s)
-  turn_speed: 0.5          # 회전 시 속도 비율
+avoid:
+  pan_scan_angles: [30, 100]
+  pan_scan_delay: 0.2
+  pan_center_angle: 90
 
-# 장애물 회피
-safe_dist: 0.5    # NAVIGATE 중 안전거리 (m)
-clearance: 0.6    # detour 시 장애물과의 최소 여유 (m)
-brake_bbox_ratio: 0.7 
+parking:
+  park_tolerance: 0.05
+  stop_steering_angle: 90
+  final_step_size: 0.1
 
-pan_tilt:
-  tilt_pin: 12 
-  final_tilt_angle: -30    # FINAL_APPROACH 시 틸트 각도
+pid:
+  p: 1.0
+  i: 0.1
+  d: 0.01
 
-final_approach:
-  threshold: 0.25        # 칸 중앙 도달용 깊이 임계치 (m)
-
-finish_bbox_ratio: 0.5
+logging:
+  level: INFO
+  file: "logs/autopark_log.txt"
