@@ -250,14 +250,34 @@ class StateMachine:
             self.path_queue = self.planner.annotate_path_with_angles(raw_path)
             self.state = State.NAVIGATE
 
+import time, math, queue
+from fsm.state_machine import State
+
     def _navigate_step(self):
-        # 1) 기본 체크
-        if not self.path_queue or self.current_pos is None or self.goal_slot is None:
-            self.logger.warning("[NAVIGATE] No path or position; returning to SEARCH")
+        # 1) 준비 체크
+        if self.current_pos is None or self.goal_slot is None:
+            self.logger.warning("[NAVIGATE] Missing current_pos or goal_slot → SEARCH")
             self.state = State.SEARCH
             return
 
-        # 2) 최신 detection
+        # 2) path_queue 비어있으면 새로 생성
+        if not getattr(self, "path_queue", None):
+            try:
+                self.path_queue = self.planner.plan(
+                    start=self.current_pos,
+                    goal=self.goal_slot,
+                    grid_size=self.cfg.get("grid_size", 0.2)
+                )
+            except Exception as e:
+                self.logger.warning(f"[NAVIGATE] plan() failed: {e} → using direct fallback")
+                dx = self.goal_slot[0] - self.current_pos[0]
+                dy = self.goal_slot[1] - self.current_pos[1]
+                dist = math.hypot(dx, dy)
+                self.path_queue = [{"pos": (self.goal_slot[0], self.goal_slot[1]),
+                                    "angle": 0.0,
+                                    "distance": dist}]
+
+        # 3) 최신 detection 데이터 가져오기
         self.new_det_event.wait(timeout=1.0)
         try:
             _, detections = self.det_q.get_nowait()
@@ -265,51 +285,42 @@ class StateMachine:
             self.logger.warning("[NAVIGATE] No detection data available")
             return
 
-        # 3) 장애물 검사
+        # 4) 장애물 검사
         if self.planner.obstacle_detector(
             detections.get("custom", []),
             danger_classes=self.cfg.get("obstacle_classes", [0]),
             danger_distance=self.cfg.get("obstacle_distance_threshold", 1.0)
         ):
-            self.logger.info("[NAVIGATE] Obstacle detected. Entering WAIT.")
+            self.logger.info("[NAVIGATE] Obstacle detected → WAIT")
             self.state = State.WAIT
             return
 
-        # 4) 경로 따라 이동
-        for step in self.path_queue:
-            # 4-1) pos 안전 언패킹
-            pos_data = step.get("pos")
-            if isinstance(pos_data, (tuple, list)):
-                x, y = pos_data
-            elif isinstance(pos_data, dict):
-                x = pos_data.get("x", pos_data.get("pos_x"))
-                y = pos_data.get("y", pos_data.get("pos_y"))
+        # 5) 경로 따라 이동
+        for idx, step in enumerate(self.path_queue):
+            # 5-1) pos 안전 언패킹
+            pos = step.get("pos")
+            if isinstance(pos, (tuple, list)) and len(pos) == 2:
+                x, y = float(pos[0]), float(pos[1])
             else:
-                self.logger.error(f"[NAVIGATE] Invalid waypoint format: {pos_data}")
+                self.logger.error(f"[NAVIGATE] Invalid waypoint #{idx} pos: {pos}")
                 self.state = State.ERROR
                 return
 
-            # 4-2) None 검사
-            if x is None or y is None:
-                self.logger.error(f"[NAVIGATE] Waypoint missing coordinates: {pos_data}")
-                self.state = State.ERROR
-                return
+            # 5-2) angle, distance
+            angle    = float(step.get("angle", 0.0))
+            distance = float(step.get("distance",
+                             math.hypot(x - self.current_pos[0],
+                                        y - self.current_pos[1])))
 
-            angle = step.get("angle", 0.0)
-
-            # 4-3) 조향
+            # 5-3) 조향 & 주행
             servo_ang = self.ctrl.map_physical_angle_to_servo(angle)
             self.ctrl.set_angle(servo_ang)
-            self.ctrl.set_speed(self.cfg.get("navigate_speed", 30), reverse=False)
+            self.ctrl.set_speed(self.cfg.get("navigate_speed", 30),
+                                 reverse=False)
 
-            # 4-4) 이동 시간 계산
-            dx = x - self.current_pos[0]
-            dy = y - self.current_pos[1]
-            distance    = math.hypot(dx, dy)
             travel_time = distance / self.planner.speed_mps
             t0 = time.time()
-
-            # 4-5) 이동 중 장애물 재검사
+            # 5-4) 이동 중 장애물 재검사
             while time.time() - t0 < travel_time:
                 self.new_det_event.wait(timeout=1.0)
                 try:
@@ -322,17 +333,17 @@ class StateMachine:
                     danger_distance=self.cfg.get("obstacle_distance_threshold", 1.0)
                 ):
                     self.ctrl.stop()
-                    self.logger.warning("[NAVIGATE] Obstacle during move. Switching to WAIT.")
+                    self.logger.warning("[NAVIGATE] Obstacle during move → WAIT")
                     self.state = State.WAIT
                     return
                 time.sleep(0.1)
 
-            # 4-6) 스텝 완료
+            # 5-5) 스텝 완료
             self.ctrl.stop()
             self.current_pos = (x, y)
 
-        # 5) 최종 접근으로 전환
-        self.logger.info("[NAVIGATE] Path complete. Entering FINAL_APPROACH.")
+        # 6) 경로 모두 완료 → FINAL_APPROACH
+        self.logger.info("[NAVIGATE] Path complete → FINAL_APPROACH")
         self.state = State.FINAL_APPROACH
 
     def _wait_step(self):
