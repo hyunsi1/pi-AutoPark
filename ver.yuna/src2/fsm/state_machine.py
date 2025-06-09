@@ -251,32 +251,13 @@ class StateMachine:
             self.state = State.NAVIGATE
 
     def _navigate_step(self):
-        # 1) 기본 전제 검사
+        # 1) 준비 체크
         if self.current_pos is None or self.goal_slot is None:
             self.logger.warning("[NAVIGATE] Missing current_pos or goal_slot → SEARCH")
             self.state = State.SEARCH
             return
 
-        # 2) path_queue 가 비어있으면 plan() 호출
-        if not getattr(self, "path_queue", None):
-            try:
-                self.path_queue = self.planner.plan(
-                    start=self.current_pos,
-                    goal=self.goal_slot,
-                    grid_size=self.cfg.get("grid_size", 0.2)
-                )
-            except Exception as e:
-                self.logger.warning(f"[NAVIGATE] plan() failed: {e} → direct fallback")
-                dx = self.goal_slot[0] - self.current_pos[0]
-                dy = self.goal_slot[1] - self.current_pos[1]
-                dist = math.hypot(dx, dy)
-                self.path_queue = [{
-                    "pos": (self.goal_slot[0], self.goal_slot[1]),
-                    "angle": 0.0,
-                    "distance": dist
-                }]
-
-        # 3) 최신 detection
+        # 2) 최신 detection
         self.new_det_event.wait(timeout=1.0)
         try:
             _, detections = self.det_q.get_nowait()
@@ -284,7 +265,7 @@ class StateMachine:
             self.logger.warning("[NAVIGATE] No detection data available")
             return
 
-        # 4) 장애물 체크
+        # 3) 장애물 유무 먼저 체크
         if self.planner.obstacle_detector(
             detections.get("custom", []),
             danger_classes=self.cfg.get("obstacle_classes", [0]),
@@ -294,37 +275,49 @@ class StateMachine:
             self.state = State.WAIT
             return
 
-        # 5) 경로 따라 이동
-        for idx, step in enumerate(self.path_queue):
-            raw_pos = step.get("pos")
+        # 4) 매 프레임마다 항상 새로 경로 계산
+        try:
+            waypoints = self.planner.plan(
+                start=self.current_pos,
+                goal=self.goal_slot,
+                grid_size=self.cfg.get("grid_size", 0.2)
+            )
+        except Exception as e:
+            self.logger.warning(f"[NAVIGATE] plan() failed: {e} → direct fallback")
+            dx = self.goal_slot[0] - self.current_pos[0]
+            dy = self.goal_slot[1] - self.current_pos[1]
+            waypoints = [{
+                "pos": (self.goal_slot[0], self.goal_slot[1]),
+                "angle": 0.0,
+                "distance": math.hypot(dx, dy)
+            }]
 
-            # ▶ 중첩된 dict 처리: {'pos': (x,y), 'angle':…, 'distance':…} 인 경우
-            if isinstance(raw_pos, dict) and "pos" in raw_pos:
-                raw_pos = raw_pos["pos"]
-
-            # ▶ 이제 raw_pos 는 반드시 시퀀스여야 합니다
+        # 5) 계산된 웨이포인트 순회
+        for idx, wp in enumerate(waypoints):
+            # 안전하게 튜플 언패킹
             try:
-                x = float(raw_pos[0])
-                y = float(raw_pos[1])
-            except Exception as e:
-                self.logger.error(f"[NAVIGATE] Waypoint #{idx} bad pos: {step!r}, error: {e}")
+                x = float(wp["pos"][0])
+                y = float(wp["pos"][1])
+            except Exception as ex:
+                self.logger.error(f"[NAVIGATE] Waypoint #{idx} bad pos={wp!r}: {ex}")
                 self.state = State.ERROR
                 return
 
-            angle    = float(step.get("angle",   0.0))
-            distance = float(step.get("distance",
-                             math.hypot(x - self.current_pos[0],
-                                        y - self.current_pos[1])))
+            angle    = float(wp.get("angle",   0.0))
+            distance = float(wp.get("distance",
+                            math.hypot(x - self.current_pos[0],
+                                       y - self.current_pos[1])))
 
             # 5-1) 조향
             servo_ang = self.ctrl.map_physical_angle_to_servo(angle)
             self.ctrl.set_angle(servo_ang)
             self.ctrl.set_speed(self.cfg.get("navigate_speed", 30), reverse=False)
 
-            # 5-2) 이동
+            # 5-2) 주행
             travel_time = distance / self.planner.speed_mps
             t0 = time.time()
             while time.time() - t0 < travel_time:
+                # 이동 중에도 장애물 재검사
                 self.new_det_event.wait(timeout=1.0)
                 try:
                     _, det2 = self.det_q.get_nowait()
@@ -336,19 +329,19 @@ class StateMachine:
                     danger_distance=self.cfg.get("obstacle_distance_threshold", 1.0)
                 ):
                     self.ctrl.stop()
-                    self.logger.warning("[NAVIGATE] Obstacle during move → WAIT")
+                    self.logger.info("[NAVIGATE] Obstacle during move → WAIT")
                     self.state = State.WAIT
                     return
                 time.sleep(0.1)
-                self.current_pos = (x, y)
 
-            # 5-3) 정지 및 위치 갱신
+            # 5-3) 스텝 완료
             self.ctrl.stop()
             self.current_pos = (x, y)
 
-        # 6) 최종 접근으로 전환
+        # 6) 모든 웨이포인트 완료 시
         self.logger.info("[NAVIGATE] Path complete → FINAL_APPROACH")
         self.state = State.FINAL_APPROACH
+
 
     def _wait_step(self):
         if not hasattr(self, "wait_start_time"):
