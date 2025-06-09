@@ -1,0 +1,42 @@
+camera:
+  source: 0
+  image_folder: null
+  loop: false
+
+yolo:
+  coco_weights: /home/pi/autopark/yolov5n.pt
+  custom_weights: /home/pi/autopark/yolov5_weight/best5.pt
+  conf_thres: 0.3
+  iou_thres: 0.45
+  max_det: 50
+
+pixel_to_meter: 0.1
+speed_mps: 0.2
+angle_threshold_deg: 20
+
+navigate_speed: 30
+final_approach_threshold: 0.5
+
+obstacle_classes: [0]  # custom 객체 class ID (예: 사람 등)
+obstacle_distance_threshold: 1.0  # custom 객체의 위험 거리 (m)
+obstacle_height_ratio_threshold: 0.7  # coco 객체의 프레임 비율 임계값
+max_wait_retries: 5  # WAIT 상태 반복 허용 횟수
+
+controller:
+  angle_center: 65
+  angle_min: 30
+  angle_max: 100
+
+pan_tilt:
+  tilt_default: 90
+  tilt_down_final: 30
+
+monodepth:
+  object_height: 1.1       # 킥보드 실제 높이 (m)
+  camera_height: 1.2       # 카메라 설치 높이 (m)
+  tilt_angle: 10.0         # 카메라 하향 각도 (deg)
+  method: hybrid           # ratio / ground_plane / hybrid
+  hybrid_weight: 0.5       # hybrid 비율 가중치
+
+logging:
+  level: INFO
