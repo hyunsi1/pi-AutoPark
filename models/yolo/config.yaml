@@ -1,3 +1,0 @@
-conf_thres: 0.3   # confidence threshold
-iou_thres: 0.45  # NMS IoU threshold
-max_det: 50      # 한 프레임당 최대 검출 개수
