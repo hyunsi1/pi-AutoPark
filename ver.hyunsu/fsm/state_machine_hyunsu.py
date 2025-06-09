@@ -9,8 +9,7 @@ import os, sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utility.distance import euclidean_distance
 from vision.goal_setter import GoalSetter
-from vision.final_approach_helper import find_left_reference, steering_and_offset, front_reference_gone
-from utility.transformations import pixel_to_world
+from vision.final_approach_helper import find_left_reference, steering, front_reference_gone
 
 class State(Enum):
     SEARCH = auto()
@@ -120,15 +119,15 @@ class StateMachine:
                 self.logger.info("User pressed 'q' to cancel parking")
                 break
 
-            new_pos = self.ctrl.update_navigation()
-            if new_pos is not None:
-                self.current_pos = new_pos
-            self.ctrl.update_steering()
+            # new_pos = self.ctrl.update_navigation()
+            # if new_pos is not None:
+            #     self.current_pos = new_pos
+            # self.ctrl.update_steering()
 
-            if self.ctrl.is_busy:
-                if new_pos is not None:
-                    self.current_pos = new_pos 
-                continue
+            # if self.ctrl.is_busy:
+            #     if new_pos is not None:
+            #         self.current_pos = new_pos 
+            #     continue
 
             if self.state == State.SEARCH:
                 self._search_step(frame, detections)
@@ -165,7 +164,6 @@ class StateMachine:
         if side_view or empty_view:
             self.logger.info("[SEARCH] 측면 시야 또는 빈 화면 → REPOSITION")
             self._side_view_flag = True
-            time.sleep(1) 
             self.state = State.REPOSITION
             return
 
@@ -176,24 +174,21 @@ class StateMachine:
 
         self.parking_mode = mode
         self.goal_slot = goal
-
-        y2_max = max([y2 for x1, y1, x2, y2 in boxes])
-        self.current_pos = self.depth_estimator.estimate_current_position_from_y2(y2_max)
+        self.current_pos = self.depth_estimator.estimate_current_position_world()
 
         if mode == "parking":
             self.pan_tilt.reset()
 
-        time.sleep(1) 
         self.state = State.NAVIGATE
         self.logger.info(f"[SEARCH] mode={mode}, goal={self.goal_slot} → NAVIGATE")
 
     def _reposition_step(self):
-        SIDE_BACK_TIME = 0.8       
+        SIDE_BACK_TIME = 1.2       
 
         if not hasattr(self, "_repo_inited"):
             # 항상 ‘왼쪽 뒤’ 대각 후진
             self.ctrl.set_angle(100)
-            self.ctrl.set_speed(30, reverse=True)
+            self.ctrl.set_speed(50, reverse=True, time_duration=0.5)
             self._repo_dur   = SIDE_BACK_TIME
             self._repo_start = time.time()
             self._repo_inited = True
@@ -211,7 +206,6 @@ class StateMachine:
     def _navigate_step(self, detections):
         if self.goal_slot is None or self.current_pos is None:
             self.logger.error("[NAVIGATE] goal_slot 또는 current_pos가 None입니다. NAVIGATE 중단")
-            time.sleep(1) 
             self.state = State.SEARCH
             return
 
@@ -223,7 +217,6 @@ class StateMachine:
             if depth is not None and depth < self.cfg.get("obstacle_distance_threshold", 0.5):
                 self.ctrl.stop()
                 self.logger.info(f"[Obstacle-Custom] depth={depth:.2f}m → WAIT 상태")
-                time.sleep(1) 
                 self.state = State.OBSTACLE_AVOID
                 return
 
@@ -234,7 +227,6 @@ class StateMachine:
             if box_height / frame_height > self.cfg.get("obstacle_height_ratio_threshold", 0.5):
                 self.ctrl.stop()
                 self.logger.info(f"[Obstacle-COCO] bbox height ratio={box_height/frame_height:.2f} → WAIT 상태")
-                time.sleep(1) 
                 self.state = State.WAIT
                 return
 
@@ -245,7 +237,6 @@ class StateMachine:
 
         if dist < self.cfg.get("final_approach_threshold", 0.3):
             self.logger.info(f"[NAVIGATE] FINAL_APPROACH 거리 도달 (dist={dist:.2f}) → 상태 전환")
-            time.sleep(1) 
             self.state = State.FINAL_APPROACH
             return
 
@@ -330,7 +321,6 @@ class StateMachine:
         else:
             print("[WAIT] 장애물 사라짐 → NAVIGATE 복귀")
             self.wait_count = 0
-            time.sleep(1) 
             self.state = State.NAVIGATE
             del self.wait_start_time  # 초기화
 
@@ -340,12 +330,11 @@ class StateMachine:
             dets = detections.get('custom', [])
             if not dets:
                 self.logger.info("[AVOID] 감지된 custom 객체 없음 → 회피 생략")
-                time.sleep(1) 
                 self.state = State.NAVIGATE
                 return
             x1, y1, x2, y2 = dets[0]['bbox']
             obs_px = ((x1 + x2) / 2, (y1 + y2) / 2)
-            obs_world = pixel_to_world(obs_px)  # 픽셀→월드 변환!
+            obs_world = self.goal_setter.pixel_to_world(obs_px)  # 픽셀→월드 변환!
             self.path = self.planner.replan_around(
                 self.current_pos, self.goal_slot, obs_world,
                 self.cfg['clearance'], frame.shape[:2]
@@ -353,43 +342,61 @@ class StateMachine:
             for wp in self.path:
                 self.ctrl.navigate_to(self.current_pos[:2], wp)
                 self.current_pos = wp
-            time.sleep(1) 
             self.state = State.NAVIGATE
         except queue.Empty:
             self.logger.warning("[AVOID] 감지 큐가 비어 있음. 회피 생략")
         except Exception as e:
             self.logger.error(f"[AVOID] 예외 발생: {e}")
-            time.sleep(1) 
             self.state = State.NAVIGATE
 
     def _final_approach_step(self, detections):
+        """왼쪽 기준선(검은/노란) 유지 + 앞 기준선 사라지면 STOP"""
         if not hasattr(self, '_fa_inited'):
             self.pan_tilt.final_step_tilt_down()
+            time.sleep(1)
+            self.ctrl.set_speed(20)      
             self._fa_inited = True
-            self.logger.info(f"[FINAL] Final tilt 30")
+            self._fa_retry_count = 0
+            self.logger.info(f"[FINAL] tilt 30°, 준비 완료")
 
         ret, frame = self.capture.read()
         if not ret:
             return
 
         # ① 왼쪽 기준선 → steering+오프셋
-        line, _ = find_left_reference(frame)
-        if line is not None:
-            servo = steering_and_offset(line, self.ctrl)
-            self.ctrl.set_angle(servo, delay=0)
+        slope = find_left_reference(frame, min_length=500, slope_thresh=0.8)
+        if slope is not None:
+            servo = steering(slope)
+            self.ctrl.set_angle(servo)
+            self.logger.info(f"[FINAL] slope={slope:.2f}, servo={servo}")
+            time.sleep(1)
 
-        self.ctrl.set_speed(30, reverse=False)
+        self.ctrl.set_angle(self.ctrl.ANGLE_FORWARD)
         time.sleep(1)
+        self.ctrl.set_speed(20, reverse=True, sleep_duration=0.3)
+        time.sleep(1)
+        self.ctrl.stop()
+        time.sleep(0.1)
 
-        # ② 앞 기준선 사라졌는가?
-        if front_reference_gone(frame):
+        for _ in range(5):
+            self.ctrl.set_speed(15, reverse=False, time_duration=0.1)
+            time.sleep(1)
             self.ctrl.stop()
-            self.logger.info("[FINAL] 기준선 사라짐, 주차 완료")
-            time.sleep(1) 
-            self.state = State.COMPLETE
-            del self._fa_inited
+            time.sleep(0.1)
+
+            ret, frame = self.capture.read()
+            if not ret:
+                continue
+
+            if front_reference_gone(frame):
+                self.ctrl.stop()
+                self.logger.info("[FINAL] 기준선 사라짐 → 주차 완료!")
+                self.state = State.COMPLETE
+                del self._fa_inited
+                return
 
     def _complete_step(self):
         self.logger.info(f"Parked at slot {self.goal_slot}")
-        self.ui.notify_complete() 
-        exit(0)  
+        self.state = State.SEARCH
+        self.goal_slot = None
+        self.current_pos = None
