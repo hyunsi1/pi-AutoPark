@@ -4,93 +4,124 @@ import time
 import numpy as np
 
 class PathPlanner:
-    def __init__(self, pixel_to_meter=0.1, speed_mps=0.2, angle_threshold_deg=20):
+    def __init__(self,
+                 pixel_to_meter=0.1,
+                 speed_mps=0.2,
+                 angle_threshold_deg=20,
+                 max_plan_time=0.5,
+                 obstacle_radius=0.2):
         self.pixel_to_meter = pixel_to_meter
         self.speed_mps = speed_mps
         self.angle_threshold = angle_threshold_deg
+        self.max_plan_time = max_plan_time    # s
+        self.obstacle_radius = obstacle_radius
         self.obstacles = set()
 
     def heuristic(self, a, b):
-        return math.hypot(b[0] - a[0], b[1] - a[1])
+        return math.hypot(b[0]-a[0], b[1]-a[1])
 
     def set_obstacle(self, world_coord):
         self.obstacles.add(world_coord)
 
-    def a_star(self, start, goal, grid_size=0.1):
-        """A* 알고리즘으로 start에서 goal까지의 경로를 계산"""
-        open_set = []
-        heapq.heappush(open_set, (0 + self.heuristic(start, goal), 0, start, [start]))
-        visited = set()
-
-        while open_set:
-            _, cost, current, path = heapq.heappop(open_set)
-            if current in visited:
-                continue
-            visited.add(current)
-
-            if self.heuristic(current, goal) < grid_size:
-                return path + [goal]
-
-            for dx in [-grid_size, 0, grid_size]:
-                for dy in [-grid_size, 0, grid_size]:
-                    if dx == 0 and dy == 0:
-                        continue
-                    neighbor = (round(current[0] + dx, 2), round(current[1] + dy, 2))
-                    if neighbor in visited or self._is_obstacle(neighbor):
-                        continue
-                    new_cost = cost + self.heuristic(current, neighbor)
-                    priority = new_cost + self.heuristic(neighbor, goal)
-                    heapq.heappush(open_set, (priority, new_cost, neighbor, path + [neighbor]))
-
-        return []  # 경로를 찾을 수 없음
-
-    def _is_obstacle(self, point):
+    def _is_obstacle(self, pt):
         for obs in self.obstacles:
-            if self.heuristic(point, obs) < 0.2:
+            if self.heuristic(pt, obs) < self.obstacle_radius:
                 return True
         return False
 
-    def plan(self, start, goal):
-        raw_path = self.a_star(start, goal)
+    def _is_clear_line(self, start, goal, samples=10):
+        """start→goal 직선 위에 장애물이 없으면 True"""
+        for t in np.linspace(0, 1, samples):
+            pt = (start[0] + (goal[0]-start[0])*t,
+                  start[1] + (goal[1]-start[1])*t)
+            if self._is_obstacle(pt):
+                return False
+        return True
+
+    def _a_star(self, start, goal, grid_size, start_time, max_iters=10000):
+        open_set = []
+        heapq.heappush(open_set, (self.heuristic(start, goal), 0, start, [start]))
+        closed = set()
+        iters = 0
+
+        # 4방향 이웃
+        directions = [(grid_size,0),(-grid_size,0),(0,grid_size),(0,-grid_size)]
+
+        while open_set:
+            if time.time() - start_time > self.max_plan_time or iters > max_iters:
+                raise TimeoutError("A* 타임아웃/최대반복 초과")
+            iters += 1
+
+            est_tot, cost, curr, path = heapq.heappop(open_set)
+            if curr in closed:
+                continue
+            closed.add(curr)
+
+            # goal 도달 판정
+            if self.heuristic(curr, goal) < grid_size:
+                return path + [goal]
+
+            # 이웃 탐색
+            for dx, dy in directions:
+                nbr = (round(curr[0]+dx,2), round(curr[1]+dy,2))
+                if nbr in closed or self._is_obstacle(nbr):
+                    continue
+                new_cost = cost + self.heuristic(curr, nbr)
+                pri = new_cost + self.heuristic(nbr, goal)
+                heapq.heappush(open_set, (pri, new_cost, nbr, path+[nbr]))
+
+        raise TimeoutError("A* 경로 미발견")
+
+    def plan(self, start, goal, grid_size=0.2):
+        """
+        start, goal: (x,y) in meters
+        grid_size: 탐색 그리드 크기 (m) — 클수록 빠름, 정밀도 ↓
+        """
+        # 1) 직선 확인
+        if self._is_clear_line(start, goal, samples=5):
+            # 장애물 없으면 곧장
+            raw = [start, goal]
+            print("[PLANNER] direct path (no obstacles)")
+        else:
+            # 2) A* 수행
+            t0 = time.time()
+            try:
+                raw = self._a_star(start, goal, grid_size, t0)
+            except TimeoutError as e:
+                print(f"[PLANNER] Warning: {e}, fallback to direct")
+                raw = [start, goal]
+
+        # 3) waypoints 생성
         waypoints = []
-
-        for i in range(1, len(raw_path)):
-            prev = raw_path[i - 1]
-            curr = raw_path[i]
-            dx = curr[0] - prev[0]
-            dy = curr[1] - prev[1]
-            angle_rad = math.atan2(dy, dx)
-            angle_deg = math.degrees(angle_rad)
-            distance = math.hypot(dx, dy)
-
+        for p0, p1 in zip(raw, raw[1:]):
+            dx, dy = p1[0]-p0[0], p1[1]-p0[1]
+            ang = math.degrees(math.atan2(dy, dx))
+            dist = math.hypot(dx, dy)
             waypoints.append({
-                "pos": curr,
-                "angle": angle_deg,
-                "distance": distance
+                "pos": p1,
+                "angle": max(-45, min(45, ang)),
+                "distance": dist
             })
-
         return waypoints
 
     def navigate(self, controller, path, obstacle_detector=None):
         for wp in path:
-            angle_deg = max(-45, min(45, wp["angle"]))
-            servo_angle = controller.map_physical_angle_to_servo(angle_deg)
-            controller.set_angle(servo_angle)
+            servo = controller.map_physical_angle_to_servo(wp["angle"])
+            controller.set_angle(servo)
             controller.set_speed(30, reverse=False)
 
-            travel_time = wp["distance"] / self.speed_mps
-            start_time = time.time()
-
-            while time.time() - start_time < travel_time:
+            t_move = wp["distance"] / self.speed_mps
+            t0 = time.time()
+            while time.time() - t0 < t_move:
                 if obstacle_detector and obstacle_detector():
                     controller.stop()
-                    print("[Obstacle] 장애물 감지! 경로 재계산 필요")
+                    print("[NAVIGATE] obstacle! abort")
                     return False
                 time.sleep(0.1)
 
             controller.stop()
 
-        print("[Navigate] 목표 지점 도달 완료")
+        print("[NAVIGATE] done")
         return True
 
     def obstacle_detector(self, detections, danger_classes=(0,), danger_distance=1.5):
