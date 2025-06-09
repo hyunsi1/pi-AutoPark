@@ -251,13 +251,13 @@ class StateMachine:
             self.state = State.NAVIGATE
 
     def _navigate_step(self):
-        # 1) 준비 체크
+        # 1) 기본 체크
         if not self.path_queue or self.current_pos is None or self.goal_slot is None:
             self.logger.warning("[NAVIGATE] No path or position; returning to SEARCH")
             self.state = State.SEARCH
             return
 
-        # 2) 최신 detection 데이터 가져오기
+        # 2) 최신 detection
         self.new_det_event.wait(timeout=1.0)
         try:
             _, detections = self.det_q.get_nowait()
@@ -265,68 +265,73 @@ class StateMachine:
             self.logger.warning("[NAVIGATE] No detection data available")
             return
 
-        # 3) 장애물 유무 확인
-        is_obstacle = self.planner.obstacle_detector(
+        # 3) 장애물 검사
+        if self.planner.obstacle_detector(
             detections.get("custom", []),
             danger_classes=self.cfg.get("obstacle_classes", [0]),
             danger_distance=self.cfg.get("obstacle_distance_threshold", 1.0)
-        )
-        if is_obstacle:
-            self.logger.info("[NAVIGATE] Obstacle detected. Entering WAIT state.")
+        ):
+            self.logger.info("[NAVIGATE] Obstacle detected. Entering WAIT.")
             self.state = State.WAIT
             return
 
         # 4) 경로 따라 이동
         for step in self.path_queue:
-            # pos 언패킹: tuple, list, 혹은 dict 지원
-            pos_data = step["pos"]
+            # 4-1) pos 안전 언패킹
+            pos_data = step.get("pos")
             if isinstance(pos_data, (tuple, list)):
                 x, y = pos_data
             elif isinstance(pos_data, dict):
                 x = pos_data.get("x", pos_data.get("pos_x"))
                 y = pos_data.get("y", pos_data.get("pos_y"))
             else:
-                # 시퀀스라면 인덱스 접근
-                x, y = pos_data[0], pos_data[1]
+                self.logger.error(f"[NAVIGATE] Invalid waypoint format: {pos_data}")
+                self.state = State.ERROR
+                return
 
-            angle = step["angle"]
+            # 4-2) None 검사
+            if x is None or y is None:
+                self.logger.error(f"[NAVIGATE] Waypoint missing coordinates: {pos_data}")
+                self.state = State.ERROR
+                return
 
-            # 4-1) 조향
-            servo_angle = self.ctrl.map_physical_angle_to_servo(angle)
-            self.ctrl.set_angle(servo_angle)
+            angle = step.get("angle", 0.0)
+
+            # 4-3) 조향
+            servo_ang = self.ctrl.map_physical_angle_to_servo(angle)
+            self.ctrl.set_angle(servo_ang)
             self.ctrl.set_speed(self.cfg.get("navigate_speed", 30), reverse=False)
 
-            # 4-2) 이동 시간 계산
+            # 4-4) 이동 시간 계산
             dx = x - self.current_pos[0]
             dy = y - self.current_pos[1]
-            distance = math.hypot(dx, dy)
+            distance    = math.hypot(dx, dy)
             travel_time = distance / self.planner.speed_mps
             t0 = time.time()
 
-            # 4-3) 이동 중 장애물 재검사
+            # 4-5) 이동 중 장애물 재검사
             while time.time() - t0 < travel_time:
                 self.new_det_event.wait(timeout=1.0)
                 try:
-                    _, detections = self.det_q.get_nowait()
+                    _, det2 = self.det_q.get_nowait()
                 except queue.Empty:
-                    pass
-
+                    det2 = detections
                 if self.planner.obstacle_detector(
-                    detections.get("custom", []),
+                    det2.get("custom", []),
                     danger_classes=self.cfg.get("obstacle_classes", [0]),
                     danger_distance=self.cfg.get("obstacle_distance_threshold", 1.0)
                 ):
                     self.ctrl.stop()
-                    self.logger.warning("[NAVIGATE] Obstacle encountered during move. Switching to WAIT.")
+                    self.logger.warning("[NAVIGATE] Obstacle during move. Switching to WAIT.")
                     self.state = State.WAIT
                     return
                 time.sleep(0.1)
 
-            # 4-4) 스텝 완료 후 정지 및 위치 갱신
+            # 4-6) 스텝 완료
             self.ctrl.stop()
             self.current_pos = (x, y)
 
-        # 5) 모든 스텝 완료 시 FINAL_APPROACH로 전환
+        # 5) 최종 접근으로 전환
         self.logger.info("[NAVIGATE] Path complete. Entering FINAL_APPROACH.")
         self.state = State.FINAL_APPROACH
 
