@@ -295,13 +295,19 @@ class StateMachine:
             return
 
         # 5) 경로 따라 이동
-        for step in self.path_queue:
-            # ▶ pos 언패킹: 반드시 두 원소를 꺼내서 float 변환
+        for idx, step in enumerate(self.path_queue):
+            raw_pos = step.get("pos")
+
+            # ▶ 중첩된 dict 처리: {'pos': (x,y), 'angle':…, 'distance':…} 인 경우
+            if isinstance(raw_pos, dict) and "pos" in raw_pos:
+                raw_pos = raw_pos["pos"]
+
+            # ▶ 이제 raw_pos 는 반드시 시퀀스여야 합니다
             try:
-                x = float(step["pos"][0])
-                y = float(step["pos"][1])
+                x = float(raw_pos[0])
+                y = float(raw_pos[1])
             except Exception as e:
-                self.logger.error(f"[NAVIGATE] Waypoint missing coordinates: {step!r}, error: {e}")
+                self.logger.error(f"[NAVIGATE] Waypoint #{idx} bad pos: {step!r}, error: {e}")
                 self.state = State.ERROR
                 return
 
@@ -334,6 +340,7 @@ class StateMachine:
                     self.state = State.WAIT
                     return
                 time.sleep(0.1)
+                self.current_pos = (x, y)
 
             # 5-3) 정지 및 위치 갱신
             self.ctrl.stop()
