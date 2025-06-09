@@ -250,17 +250,14 @@ class StateMachine:
             self.path_queue = self.planner.annotate_path_with_angles(raw_path)
             self.state = State.NAVIGATE
 
-import time, math, queue
-from fsm.state_machine import State
-
     def _navigate_step(self):
-        # 1) 준비 체크
+        # 1) 기본 전제 검사
         if self.current_pos is None or self.goal_slot is None:
             self.logger.warning("[NAVIGATE] Missing current_pos or goal_slot → SEARCH")
             self.state = State.SEARCH
             return
 
-        # 2) path_queue 비어있으면 새로 생성
+        # 2) path_queue 가 비어있으면 plan() 호출
         if not getattr(self, "path_queue", None):
             try:
                 self.path_queue = self.planner.plan(
@@ -269,15 +266,17 @@ from fsm.state_machine import State
                     grid_size=self.cfg.get("grid_size", 0.2)
                 )
             except Exception as e:
-                self.logger.warning(f"[NAVIGATE] plan() failed: {e} → using direct fallback")
+                self.logger.warning(f"[NAVIGATE] plan() failed: {e} → direct fallback")
                 dx = self.goal_slot[0] - self.current_pos[0]
                 dy = self.goal_slot[1] - self.current_pos[1]
                 dist = math.hypot(dx, dy)
-                self.path_queue = [{"pos": (self.goal_slot[0], self.goal_slot[1]),
-                                    "angle": 0.0,
-                                    "distance": dist}]
+                self.path_queue = [{
+                    "pos": (self.goal_slot[0], self.goal_slot[1]),
+                    "angle": 0.0,
+                    "distance": dist
+                }]
 
-        # 3) 최신 detection 데이터 가져오기
+        # 3) 최신 detection
         self.new_det_event.wait(timeout=1.0)
         try:
             _, detections = self.det_q.get_nowait()
@@ -285,7 +284,7 @@ from fsm.state_machine import State
             self.logger.warning("[NAVIGATE] No detection data available")
             return
 
-        # 4) 장애물 검사
+        # 4) 장애물 체크
         if self.planner.obstacle_detector(
             detections.get("custom", []),
             danger_classes=self.cfg.get("obstacle_classes", [0]),
@@ -296,31 +295,29 @@ from fsm.state_machine import State
             return
 
         # 5) 경로 따라 이동
-        for idx, step in enumerate(self.path_queue):
-            # 5-1) pos 안전 언패킹
-            pos = step.get("pos")
-            if isinstance(pos, (tuple, list)) and len(pos) == 2:
-                x, y = float(pos[0]), float(pos[1])
-            else:
-                self.logger.error(f"[NAVIGATE] Invalid waypoint #{idx} pos: {pos}")
+        for step in self.path_queue:
+            # ▶ pos 언패킹: 반드시 두 원소를 꺼내서 float 변환
+            try:
+                x = float(step["pos"][0])
+                y = float(step["pos"][1])
+            except Exception as e:
+                self.logger.error(f"[NAVIGATE] Waypoint missing coordinates: {step!r}, error: {e}")
                 self.state = State.ERROR
                 return
 
-            # 5-2) angle, distance
-            angle    = float(step.get("angle", 0.0))
+            angle    = float(step.get("angle",   0.0))
             distance = float(step.get("distance",
                              math.hypot(x - self.current_pos[0],
                                         y - self.current_pos[1])))
 
-            # 5-3) 조향 & 주행
+            # 5-1) 조향
             servo_ang = self.ctrl.map_physical_angle_to_servo(angle)
             self.ctrl.set_angle(servo_ang)
-            self.ctrl.set_speed(self.cfg.get("navigate_speed", 30),
-                                 reverse=False)
+            self.ctrl.set_speed(self.cfg.get("navigate_speed", 30), reverse=False)
 
+            # 5-2) 이동
             travel_time = distance / self.planner.speed_mps
             t0 = time.time()
-            # 5-4) 이동 중 장애물 재검사
             while time.time() - t0 < travel_time:
                 self.new_det_event.wait(timeout=1.0)
                 try:
@@ -338,11 +335,11 @@ from fsm.state_machine import State
                     return
                 time.sleep(0.1)
 
-            # 5-5) 스텝 완료
+            # 5-3) 정지 및 위치 갱신
             self.ctrl.stop()
             self.current_pos = (x, y)
 
-        # 6) 경로 모두 완료 → FINAL_APPROACH
+        # 6) 최종 접근으로 전환
         self.logger.info("[NAVIGATE] Path complete → FINAL_APPROACH")
         self.state = State.FINAL_APPROACH
 
