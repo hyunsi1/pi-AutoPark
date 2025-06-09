@@ -1,105 +1,88 @@
-## 1. 초기화 단계
+### **1. 하드웨어 구성**
 
-1. **`main.py`**
-    - 애플리케이션 시작
-    - `config/config.yaml` 로부터 Geofence, 카메라 파라미터, 사전 정의된 슬롯(좌표·폭·높이) 로드
-    - 로거(`utils/logger.py`) 초기화
-    - 카메라 캘리브레이션 데이터(`camera/calibration.py`) 불러오기
-2. **YOLO 모델 로드**
-    - **YOLOv5n** (`models/yolo/config.yaml`, `best_weights.pt`) 사용
-    - `vision/yolo_detector.py` 내부에서 모델 초기화
-
----
-
-## 2. 주 모드 전환(상태 머신)
-
-`main.py`에서 크게 두 모드를 순회합니다:
-
-- **Calibration 모드**
-- **Auto-Parking 모드**
-
-필요에 따라 `scripts/calibrate_camera.py`로 별도 캘리브레이션을 수행합니다.
+- **킥보드 모형**
+    - Autodesk Fusion 360으로 설계 후 3D 프린팅 (실험 환경 구현용 모형은 우드락 대체).
+    - **조향**: DFRobot 서보모터 (dfr0604)
+    - **속도 제어**: L298N 기반 DC 모터 드라이버
+- **단일 웹캠**
+    - 핸들부에 장착, 영상 인식용
+    - 서보모터를 통해 **Tilt (상/하)** 가능: 주차 시 전방 → 하단 각도 전환
 
 ---
 
-## 3. Auto-Parking 모드 흐름
+### **2. 소프트웨어 아키텍처**
+
+- 전체 시스템은 **FSM (Finite State Machine)** 기반으로 설계되며, 상태는 다음과 같이 정의:
 
 ```mermaid
-flowchart TD
-    A["run_parking.py 호출"] --> B["main.py 초기화 완료"]
-    B --> C{모드 선택}
-    C -->|Calibration| CAL["Calibration 모드"]
-    C -->|Auto-Parking| D["UserIO.prompt_start()"]
-    D --> E["SEARCH 상태"]
+stateDiagram-v2
+    [*] --> SEARCH
+    SEARCH --> NAVIGATE: 주차 슬롯 감지 완료 & 목표 위치 설정
+    NAVIGATE --> OBSTACLE_AVOID: 장애물 감지됨
+    OBSTACLE_AVOID --> SEARCH: 재탐색 시작
+    NAVIGATE --> FINAL_APPROACH: 목표 지점 근접
+    FINAL_APPROACH --> COMPLETE: 기준선 사라짐 (주차 완료)
+    COMPLETE --> [*]
+    NAVIGATE --> ERROR: 제어 실패/시간 초과
+    SEARCH --> ERROR: 슬롯 검출 실패 지속
+    ERROR --> [*]
 
-    E --> F["FrameCapture로 프레임 획득"]
-    F --> G["YOLOv5n.detect()"]
-    G --> H["거리 추정 (MonoDepthEstimator)"]
-    H --> I{SlotAllocator로 빈 슬롯 탐색}
-    I -->|빈 슬롯 발견| J["NAVIGATE로 전이"]
-    I -->|없음| E
-
-    J --> K["NAVIGATE 상태"]
-    K --> L["현재 위치 계산 (카메라 뷰 기반)"]
-    L --> M["PathPlanner.plan()"]
-    M --> N{각 waypoint 순회}
-    N -->|장애물 없음| O["Controller.navigate_to() 이동"]
-    O --> N
-    N -->|장애물 있음| P["OBSTACLE_AVOID로 전이"]
-
-    P --> Q["Controller.stop() 정지"]
-    Q --> R["PathPlanner.replan_around()"]
-    R --> S["Controller.navigate_to() 이동"]
-    S --> T["NAVIGATE 재진입"]
-
-    T --> U["FINAL_APPROACH 상태"]
-    U --> V["PanTiltController.tilt 아래로"]
-    V --> W{depth ≤ threshold?}
-    W -->|아직| V
-    W -->|충분| X["COMPLETE로 전이"]
-
-    X --> Y["UserIO.notify_complete()"]
-    Y --> E
 ```
 
-### 3.1. SEARCH 단계
+- 각 FSM 상태는 `state_machine.py` 내 `_search_step`, `_navigate_step`, `_wait_step`, `_final_approach_step`, `_complete_step` 등으로 나뉘며, 프레임 단위로 처리됨.
 
-1. **프레임 획득**
-    - `camera/capture.py`: 웹캠 스트림 또는 이미지 파일
-2. **슬롯 정보 로드**
-    - `config/config.yaml`에 정의된 슬롯별 **화면 좌표, 폭(width), 높이(height)** 읽어오기
-3. **장애물(킥보드) 검출**
-    - `vision/yolo_detector.py` ▶ **YOLOv5n**를 통해 바운딩박스 반환
-4. **거리 추정**
-    - `vision/monodepth_estimator.py` ▶ 기하학 모델로 각 바운딩박스의 거리 계산
-5. **빈 슬롯 후보 생성**
-    - 사전 정의된 슬롯 중, 검출된 장애물이 없는 슬롯 리스트 필터링
-6. **목표 슬롯 할당**
-    - 첫 번째 빈 슬롯을 목표로 설정 ▶ state = NAVIGATE
+---
 
-### 3.2. NAVIGATION 단계
+### **3. 주요 모듈 설명**
 
-1. **경로 계획**
-    - `navigation/path_planner.py` ▶ 장애물 회피 경로 생성
-2. **주행 제어**
-    - `navigation/controller.py` ▶ PID 제어로 스티어링·속도 제어
-3. **전방 관찰**
-    - `camera/pan_tilt_control.py` ▶ Pan 유지, Tilt = 0°
+### `yolo_detector.py`
 
-### 3.3. FINAL_APPROACH 단계
+- YOLOv5를 활용한 **주차 슬롯 및 장애물 탐지**
+- custom 모델 (킥보드), COCO 모델 (사람/자전거 등)을 이중으로 사용
 
-1. **근접 임계치 도달 감지**
-    - `utils/distance.py` ▶ 현재 위치와 목표점 거리 확인
-2. **정밀 모드 전환**
-    - `camera/pan_tilt_control.py` ▶ Tilt → 아래 보기 (예: -30°)
-3. **깊이 보정**
-    - `vision/monodepth_estimator.py` ▶ 단안 기하학 계산으로 칸 중앙 보정
-4. **Fine-Control**
-    - `navigation/controller.py` ▶ 짧은 거리 PID 조향/속도 제어
+### `monodepth_estimator.py`
 
-### 3.4. COMPLETE 단계
+- **단안 카메라 기반 거리 추정**
+- ratio / ground_plane / hybrid 방식 선택 가능
+- config.yaml에서 파라미터 로드 (`monodepth:` 섹션)
 
-1. **주차 완료 로깅**
-    - `utils/logger.py` ▶ 최종 상태 로컬/서버 전송
-2. **상태 초기화**
-    - 다음 반납 요청을 위해 `state = SEARCH`
+### `slot_geometry.py`
+
+- 주차 슬롯 인식 (사각형 감지)
+- 기준선 기반 최종 정렬을 위한 reference line 검출
+
+### `path_planner.py`
+
+- A* 기반 경로 탐색 + waypoint angle, distance 등 메타데이터 포함
+- 동적 장애물 회피는 FSM에서 `WAIT` 상태로 분리 처리
+- `navigate()`는 각 waypoint에 대해 조향·속도 제어 수행
+
+### `controller.py`
+
+- 서보 및 모터 제어. `set_angle`, `set_speed`, `stop`, `map_physical_angle_to_servo` 등 포함
+- `steering_and_offset` 함수는 영상 기반 조향 보정
+
+### `pan_tilt_control.py`
+
+- 전방 탐색 시 tilt=90, 주차 시 tilt=30으로 하향 조정
+
+### `user_io.py`
+
+- 완료 알림 또는 사용자 피드백용 인터페이스 구성
+
+---
+
+### **4. 설정 파일 (`config.yaml`)**
+
+- 모든 파라미터는 `config.yaml`을 통해 통합 관리
+- 실제 동작은 모두 `cfg['...']` 방식으로 전달되어 연동됨
+
+---
+
+### **5. 프로젝트 실행 흐름**
+
+1. `main.py` → config 로딩, 객체 생성, `StateMachine.run()` 실행
+2. `SEARCH` 상태 → 슬롯 탐지, 장애물 등록, `planner.plan()`으로 경로 생성
+3. `NAVIGATE` 상태 → 경로 따라 이동, 위험 감지 시 `WAIT`, 실패 시 `SEARCH` 복귀
+4. 목표 인근 도달 시 → `FINAL_APPROACH` (조향/속도 세밀 제어, tilt 하향)
+5. 기준선 인식 종료 → `COMPLETE` (주차 완료)
