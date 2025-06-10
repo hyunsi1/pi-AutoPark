@@ -93,6 +93,7 @@ class StateMachine:
         self.current_pos = None
         self.path_queue = []
         self._fa_initialized = False
+        self._fa_servo_ang = None
         self.wait_count = 0
         self.logger = logging.getLogger(__name__)
 
@@ -335,7 +336,8 @@ class StateMachine:
             y1 = float(wp["pos"][1])
             line = (x0, y0, x1, y1)
 
-            servo_ang = self.ctrl.steering_and_offset(line)
+            servo_ang = self.ctrl.steering_and_offset(line) 
+            self._fa_servo_ang = servo_ang
             self.ctrl.set_angle(servo_ang)
             self.ctrl.set_speed(self.cfg.get("navigate_speed", 30), reverse=False)
 
@@ -439,73 +441,61 @@ class StateMachine:
             self.logger.exception(f"[AVOID] Exception during path replanning: {e}")
             self.state = State.ERROR
 
-    def _final_approach_step(self, detections):
+    def _final_approach_step(self):
         """
-        Final approach: repeat small reverse + steering steps to align
-        with front (��) or side (��) reference lines.
+        Final approach: navigate에서 저장된 servo_ang에 따라
+        세 가지 케이스로 동작 후 바로 COMPLETE 상태로 전환합니다.
         """
-        # 1) Initialization: tilt camera down once
-        if not hasattr(self, "_fa_inited"):
-            self.pan_tilt.final_step_tilt_down()
-            self._fa_inited = True
-            self.logger.info("[FINAL] Tilt down")
-
-        # 2) Load timing and speed parameters
-        step_time    = self.cfg.get("fa_step_time",    0.1)   # seconds per step
-        final_speed  = self.cfg.get("final_speed",    20)    # PWM duty or m/s
-        max_cycles   = self.cfg.get("fa_max_cycles", 100)    # safety cap
-
-        for cycle in range(max_cycles):
-            # 3) grab frame
-            ret, frame = self.capture.read()
-            if not ret or frame is None:
-                break
-
-            # 4) detect reference lines
-            front_line,_ = find_front_reference(frame)  # returns ((x1,y1),(x2,y2)) or None
-            if front_line is not None:
-                # target heading = line_angle + 90�� for perpendicular
-                (x1,y1),(x2,y2) = front_line
-                raw_line_angle = math.degrees(math.atan2(y2-y1, x2-x1))
-                target_heading = raw_line_angle + 90.0
-            else:
-                side_line,_ = find_side_reference(frame)
-                if side_line is not None:
-                    (x1,y1),(x2,y2) = side_line
-                    raw_line_angle = math.degrees(math.atan2(y2-y1, x2-x1))
-                    target_heading = raw_line_angle       # parallel
-                else:
-                    # no reference seen �� done
-                    break
-
-            # 5) clamp heading into [-45,45] via steering_and_offset
-            #    build a dummy line vector in world coords
-            rad = math.radians(target_heading)
-            dx = math.cos(rad)
-            dy = math.sin(rad)
-            servo_cmd = self.ctrl.steering_and_offset((0.0, 0.0, dx, dy))
-            self.ctrl.set_angle(servo_cmd, delay=0)
-
-            # 6) perform small reverse step
-            self.ctrl.set_speed(final_speed, reverse=True)
-            time.sleep(step_time)
+        # 저장된 servo_ang 읽기
+        servo_ang = getattr(self, "_fa_servo_ang", None)
+        if servo_ang is None:
+            self.logger.error("[FINAL] No servo angle → ERROR")
+            self.state = State.ERROR
+            return
+    
+        # 속도 파라미터
+        final_speed = self.cfg.get("final_speed", 20)  # PWM duty or m/s
+    
+        # ── 3가지 case 분기 ──
+        if 64 <= servo_ang <= 66:
+            # 1) 거의 직진: 0.5초 전진
+            self.ctrl.set_angle(servo_ang)
+            self.ctrl.set_speed(final_speed, reverse=False)
+            time.sleep(0.5)
             self.ctrl.stop()
-
-            # 7) check if both references are gone
-            ret2, frame2 = self.capture.read()
-            if ret2 and frame2 is not None:
-                if front_reference_gone(frame2) and side_reference_gone(frame2):
-                    self.logger.info("[FINAL] References gone �� COMPLETE")
-                    self.state = State.COMPLETE
-                    del self._fa_inited
-                    return
-
-        # fallback: safety exit
-        self.logger.warning("[FINAL] max cycles reached �� COMPLETE")
+    
+        elif servo_ang > 66:
+            # 2) 오른쪽 꺾어 전진 0.2s → 정면 전진 0.2s
+            turn_angle = 130 - servo_ang
+            self.ctrl.set_angle(turn_angle)
+            self.ctrl.set_speed(final_speed, reverse=False)
+            time.sleep(0.2)
+            self.ctrl.stop()
+    
+            self.ctrl.set_angle(0)
+            self.ctrl.set_speed(final_speed, reverse=False)
+            time.sleep(0.2)
+            self.ctrl.stop()
+    
+        else:  # servo_ang < 64
+            # 3) 왼쪽 꺾어 후진 0.2s → 정면 전진 0.2s
+            turn_angle = 130 - servo_ang
+            self.ctrl.set_angle(turn_angle)
+            self.ctrl.set_speed(final_speed, reverse=True)
+            time.sleep(0.2)
+            self.ctrl.stop()
+    
+            self.ctrl.set_angle(0)
+            self.ctrl.set_speed(final_speed, reverse=False)
+            time.sleep(0.2)
+            self.ctrl.stop()
+        # ────────────────────
+    
+        self.logger.info(f"[FINAL] servo_ang={servo_ang:.1f} → maneuver complete → COMPLETE")
         self.state = State.COMPLETE
-        if hasattr(self, "_fa_inited"):
-            del self._fa_inited
-
+    
+        # 사용한 변수 정리
+        del self._fa_servo_ang
 
     def _complete_step(self):
         self.goal_slot = None
