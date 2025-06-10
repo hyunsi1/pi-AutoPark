@@ -2,208 +2,176 @@ import cv2, numpy as np
 import os
 
 # ──────────────────────────────────────────────────
-def find_left_reference(frame, min_length=500, slope_thresh=0.8, debug=False):
+def find_left_reference(frame, min_length=500, slope_thresh=1.0, debug=False):
     """
     왼쪽 1/3 ROI에서
-      ① 검은 세로 테이프 → priority 1
-      ② 노란 발판 가장자리 → priority 2
-    둘 중 하나의 (선분, 색타입, slope)를 반환. 없으면 (None, None, None)
+      ① 노란 발판 가장자리 → priority 1
+      ② 검은 세로 테이프 → priority 2
+    둘 중 하나의 slope를 반환. 없으면 None
     """
     h, w = frame.shape[:2]
     roi = frame[:, : w//3]
 
-    # ① 검은 세로 테이프 검출 (detect_black_line_center_roi 방식)
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
-
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        length = cv2.arcLength(cnt, True)
-
-        if length < min_length or area < 1000:
-            continue
-
-        rect = cv2.minAreaRect(cnt)
-        (cx, cy), (w_rect, h_rect), angle = rect
-
-        if w_rect > h_rect:
-            dx = w_rect / 2 * np.cos(np.deg2rad(angle))
-            dy = w_rect / 2 * np.sin(np.deg2rad(angle))
-        else:
-            angle += 90
-            dx = h_rect / 2 * np.cos(np.deg2rad(angle))
-            dy = h_rect / 2 * np.sin(np.deg2rad(angle))
-
-        pt1 = (int(cx - dx), int(cy - dy))
-        pt2 = (int(cx + dx), int(cy + dy))
-
-        line_length = np.hypot(pt2[0] - pt1[0], pt2[1] - pt1[1])
-
-        if line_length < min_length or area < 1000:
-            continue
-
-        if pt2[0] - pt1[0] == 0:
-            slope = float('inf')
-        else:
-            slope = abs((pt2[1] - pt1[1]) / (pt2[0] - pt1[0]))
-
-        if slope >= 0.8:
-            # ROI 기준 좌표와 기울기 함께 반환
-            return slope
-
-    # ② 노란 발판 가장자리 찾기 (기존 그대로 유지, slope는 None 반환)
+    # ① 노란 발판 가장자리 찾기
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, (25, 80, 100), (35, 255, 255))
     mask_closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
 
-    if debug:
-        cv2.imshow("01 - ROI", cv2.resize(roi, (0,0), fx=0.5, fy=0.5))
-        cv2.imshow("02 - Yellow Mask", cv2.resize(mask, (0,0), fx=0.5, fy=0.5))
-        cv2.imshow("03 - Morph Close", cv2.resize(mask_closed, (0,0), fx=0.5, fy=0.5))
-        cv2.waitKey(0)
-
-    # 2. 컨투어 찾기
     contours, _ = cv2.findContours(mask_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        print("노란색 컨투어 없음!")
-        return None
+    if contours:
+        # 가장 큰 컨투어
+        c = max(contours, key=cv2.contourArea)
+        contour_pts = c.reshape(-1, 2)
+        x_max = np.max(contour_pts[:, 0])
+        right_edge_pts = contour_pts[contour_pts[:, 0] >= x_max - 50]
 
-    # 3. 가장 큰 컨투어 사용
-    c = max(contours, key=cv2.contourArea)
+        y_min = np.min(right_edge_pts[:, 1])
+        y_max = np.max(right_edge_pts[:, 1])
+        y1 = y_min + (y_max - y_min) / 3
+        y2 = y_min + (y_max - y_min) * 2 / 3
+        right_edge_pts = right_edge_pts[
+            (right_edge_pts[:, 1] >= y1) & (right_edge_pts[:, 1] <= y2)
+        ]
 
-    # 4. x 좌표 기준으로 오른쪽 경계점들만 추출
-    contour_pts = c.reshape(-1, 2)
-    x_max = np.max(contour_pts[:, 0])
-    right_edge_pts = contour_pts[contour_pts[:, 0] >= x_max - 50]
+        if len(right_edge_pts) >= 2:
+            [vx, vy, x0, y0] = cv2.fitLine(right_edge_pts, cv2.DIST_L2, 0, 0.01, 0.01)
+            vx, vy, x0, y0 = vx[0], vy[0], x0[0], y0[0]
 
-    # 전체 y 범위 계산
-    y_min = np.min(right_edge_pts[:, 1])
-    y_max = np.max(right_edge_pts[:, 1])
+            left_y = int(y0 - (x0) * (vy / vx))
+            right_y = int(y0 + (w//3 - x0) * (vy / vx))
+            pt1 = (0, left_y)
+            pt2 = (w//3, right_y)
 
-    # 전체 y범위를 3등분
-    y1 = y_min + (y_max - y_min) / 3
-    y2 = y_min + (y_max - y_min) * 2 / 3
+            dx, dy = pt2[0] - pt1[0], pt2[1] - pt1[1]
+            slope = abs(dy / dx) if dx != 0 else float('inf')
+            length = np.hypot(dx, dy)
 
-    # 중간 1/3만 선택
-    right_edge_pts = right_edge_pts[
-        (right_edge_pts[:, 1] >= y1) & (right_edge_pts[:, 1] <= y2)
-    ]
+            if debug:
+                debug_final = roi.copy()
+                cv2.line(debug_final, pt1, pt2, (0, 0, 255), 2)
+                cv2.imshow("Yellow Final Line", cv2.resize(debug_final, (0,0), fx=0.5, fy=0.5))
+                cv2.waitKey(0)
+                cv2.destroyAllWindows()
 
-    if debug:
-        debug_edge = cv2.cvtColor(mask_closed, cv2.COLOR_GRAY2BGR)
-        for p in right_edge_pts:
-            cv2.circle(debug_edge, tuple(p), 2, (0, 0, 255), -1)
-        cv2.imshow("04 - Right Edge Points", cv2.resize(debug_edge, (0,0), fx=0.5, fy=0.5))
-        cv2.waitKey(0)
+            if slope >= slope_thresh and length >= min_length:
+                return slope  # 노란 발판 가장자리 성공
 
-    if len(right_edge_pts) < 2:
-        print("오른쪽 경계선 점이 너무 적음!")
-        return None
+    # ② 검은 세로 테이프 찾기
+    # ROI: 왼쪽 아래 영역
+    roi_black = frame[h//2:h, 0:w//2]
 
-    # 5. 직선 근사
-    [vx, vy, x0, y0] = cv2.fitLine(right_edge_pts, cv2.DIST_L2, 0, 0.01, 0.01)
-    vx, vy, x0, y0 = vx[0], vy[0], x0[0], y0[0]
+    # 그레이스케일 → 이진화
+    gray = cv2.cvtColor(roi_black, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY_INV)
 
-    # 6. 직선 위 두 점 생성 (ROI 경계까지 연장)
-    left_y = int(y0 - (x0) * (vy / vx))
-    right_y = int(y0 + (w//2 - x0) * (vy / vx))
-    pt1 = (0, left_y)
-    pt2 = (w//2, right_y)
+    # Morphology
+    kernel = np.ones((5, 5), np.uint8)
+    binary_clean = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
 
-    # 7. 기울기와 길이 계산
-    dx, dy = pt2[0] - pt1[0], pt2[1] - pt1[1]
-    slope = abs(dy / dx) if dx != 0 else float('inf')
-    length = np.hypot(dx, dy)
+    # 엣지 검출
+    edges = cv2.Canny(binary_clean, 50, 150, apertureSize=3)
 
-    if debug:
-        debug_final = roi.copy()
-        cv2.line(debug_final, pt1, pt2, (0, 0, 255), 2)
-        cv2.imshow("05 - Final Line", cv2.resize(debug_final, (0,0), fx=0.5, fy=0.5))
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
+    # Hough Line 검출
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=50, maxLineGap=50)
 
-    if slope >= slope_thresh and length >= min_length:
-        return  slope
+    leftmost_x = w
+    selected_slope = None
 
-    return None
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+
+            # ROI에서 전체 이미지 좌표로 변환
+            y1 += h // 2
+            y2 += h // 2
+
+            length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+            if length < 100:
+                continue
+
+            if x2 - x1 == 0:
+                slope = float('inf')
+            else:
+                slope = (y2 - y1) / (x2 - x1)
+
+            if abs(slope) < 1:
+                continue
+
+            if min(x1, x2) < leftmost_x:
+                leftmost_x = min(x1, x2)
+                selected_slope = slope
+
+    return selected_slope  # 검은 세로 테이프 없으면 None
 
 
 # ──────────────────────────────────────────────────
 def steering(slope):
     """
     slope를 바로 받아서 steering 각도로 변환한다.
+    slope가 음수일 경우 (180 - 25)를 더해 각도를 조정한다.
     """
+    # 1. 기본 각도 계산 (일단 25를 뺀다)
     angle_deg = np.degrees(np.arctan(slope)) - 25
 
+    # 2. slope가 음수일 경우 추가 조정
+    if slope < 0:
+        angle_deg = angle_deg + (180 - 25) # 또는 angle_deg + 155
+
+    # 3. 최종 각도를 30에서 100 사이로 클리핑
     return np.clip(angle_deg, 30, 100)
 # ──────────────────────────────────────────────────
-def front_reference_gone(frame) -> bool:
 
-    h, w = frame.shape[:2]           # 하단 20 %
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    _, mask = cv2.threshold(gray, 40, 255, cv2.THRESH_BINARY_INV)
 
-    # 긴 가로 컨투어가 있으면 아직 보이는 것
+def count_front_lines(frame) -> int:
+    h, w = frame.shape[:2]
+    
+    # 가운데 50% 가로 ROI 설정
+    x_start = w // 4
+    x_end = x_start + w // 2
+    roi = frame[:, x_start:x_end]
+
+    # 그레이 변환 및 임계처리
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, 50, 255, cv2.THRESH_BINARY_INV)
+
+    # 컨투어 검출
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # 가로로 긴 컨투어 개수 세기
+    count = 0
     for c in cnts:
         _, _, cw, ch = cv2.boundingRect(c)
-        if cw > w * 0.5 and ch > 10:
-            return False        # 주차선이 남아있다
-    return True                 # 사라졌다 → 충분히 진입
+        if cw > w * 0.5 * 0.5 and ch < 20:
+            count += 1
+
+    return count
 
 
+def count_front_lines_with_draw(frame):
+    h, w = frame.shape[:2]
+    
+    # 가운데 50% 가로 ROI 설정
+    x_start = w // 4
+    x_end = x_start + w // 2
+    roi = frame[:, x_start:x_end]
 
-def process(folder=r"C:\Users\82104\Desktop\final"):
-    for f in os.listdir(folder):
-        if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
-            img_path = os.path.join(folder, f)
-            img = cv2.imread(img_path)
-            if img is None:
-                print(f"[{f}] 이미지를 불러올 수 없습니다.")
-                continue
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, 50, 255, cv2.THRESH_BINARY_INV)
 
-            line, color_type, slope = find_left_reference(img, min_length=500, slope_thresh=0.8, debug=True)
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    count = 0
+    for c in cnts:
+        x, y, cw, ch = cv2.boundingRect(c)
+        if cw > w * 0.5 * 0.5 and ch < 20:
+            count += 1
+            # ROI 좌표를 원본 프레임 좌표로 변환해서 박스 그림
+            cv2.rectangle(frame, (x + x_start, y), (x + x_start + cw, y + ch), (0, 255, 0), 2)
+    
+    # 가운데 50% ROI 영역 표시 (초록색 반투명)
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x_start, 0), (x_end, h), (0, 255, 0), -1)
+    alpha = 0.2
+    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
 
-            if line:
-                x1, y1, x2, y2 = line
-                cv2.line(img, (x1, y1), (x2, y2), (0, 0, 255), 3)
-                print(f"[{f}] {color_type} 검출: pt1=({x1},{y1}), pt2=({x2},{y2}), slope={slope:.2f}")
-            else:
-                print(f"[{f}] 검출 실패!")
-
-            cv2.imshow("Result", cv2.resize(img, (0,0), fx=0.5, fy=0.5))
-            cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-
-
-def test_all_images(folder_path):
-    for file_name in os.listdir(folder_path):
-        if file_name.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
-            img_path = os.path.join(folder_path, file_name)
-            img = cv2.imread(img_path)
-            if img is None:
-                print(f"[{file_name}] 이미지 읽기 실패!")
-                continue
-
-            gone = front_reference_gone(img)
-            status = "⚠️ 주차선 남아있음" if not gone else "✅ 주차선 사라짐"
-            print(f"[{file_name}] {status}")
-
-
-            small_roi = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
-            small_mask = cv2.resize(
-                cv2.threshold(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), 40, 255, cv2.THRESH_BINARY_INV)[1],
-                (0, 0), fx=0.5, fy=0.5)
-
-            cv2.imshow("ROI", small_roi)
-            cv2.imshow("Mask", small_mask)
-            cv2.waitKey(0)
-
-    cv2.destroyAllWindows()
-
-if __name__ == "__main__":
-    folder = r"C:\Users\82104\Desktop\forward"
-    test_all_images(folder)
+    return count, frame
