@@ -9,8 +9,8 @@
 
 - **킥보드 모형**
     - Autodesk Fusion 360으로 설계 후 3D 프린팅 (실험 환경 구현용 모형은 우드락 대체).
-    - **GPIO확장HAT**:DFRobot DFR0604
-    - (전용 라이브러리:https://github.com/DFRobot/DFRobot_RaspberryPi_Expansion_Board)
+    - **GPIO확장HAT**: DFRobot DFR0604
+    - (전용 라이브러리: https://github.com/DFRobot/DFRobot_RaspberryPi_Expansion_Board)
   
     - **조향**: SG-5010 서보모터
     - **속도 제어**: L298N 기반 DC 모터 드라이버
