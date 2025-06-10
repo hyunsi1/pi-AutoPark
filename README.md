@@ -1,12 +1,22 @@
+### **0. 문제 인식** 
+- **킥보드 방치 문제**
+- 보행자의 안전을 위협하고, 교통약자의 이동 불편을 야기
+![Image](https://github.com/user-attachments/assets/fb11c0f0-f4b5-4264-a466-73e70ceea3a4)
+![Image](https://github.com/user-attachments/assets/3a499feb-03c8-470e-85c3-b59fe65cdd86)
+
+
 ### **1. 하드웨어 구성**
 
 - **킥보드 모형**
     - Autodesk Fusion 360으로 설계 후 3D 프린팅 (실험 환경 구현용 모형은 우드락 대체).
-    - **조향**: DFRobot 서보모터 (dfr0604)
+    - **GPIO확장HAT**:DFRobot DFR0604
+    - (전용 라이브러리:https://github.com/DFRobot/DFRobot_RaspberryPi_Expansion_Board)
+  
+    - **조향**: SG-5010 서보모터
     - **속도 제어**: L298N 기반 DC 모터 드라이버
 - **단일 웹캠**
     - 핸들부에 장착, 영상 인식용
-    - 서보모터를 통해 **Tilt (상/하)** 가능: 주차 시 전방 → 하단 각도 전환
+    - 서보모터(MG90S)를 통해 **Tilt (상/하)** 가능: 주차 시 전방 → 하단 각도 전환
 
 ---
 
@@ -64,7 +74,7 @@ stateDiagram-v2
 
 ### `pan_tilt_control.py`
 
-- 전방 탐색 시 tilt=90, 주차 시 tilt=30으로 하향 조정
+- 전방 탐색 시 tilt=0, 주차 시 tilt=45 외 여러 각도로 하향 조정
 
 ### `user_io.py`
 
