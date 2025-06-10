@@ -25,12 +25,19 @@ class PanTiltController:
         self.reset()
 
     def reset(self):
-        self.servo.move(self.tilt_channel, 30)  
-        print("[Tilt] 0도 복귀")
+        self.board.set_pwm_frequency(50)
+        self.servo.move(self.tilt_channel, 0)  
+        print("[Tilt] 0° 복귀")
 
     def final_step_tilt_down(self):
-        self.servo.move(self.tilt_channel, 0)
-        print("[Tilt] Final Step → 30도 내려감")
+        self.board.set_pwm_frequency(50)
+        self.servo.move(self.tilt_channel, 30)
+        print("[Tilt] Final Step → 30° 내림")
+    
+    def tilt(self, angle):
+        self.board.set_pwm_frequency(50)
+        self.servo.move(self.tilt_channel, angle)
+        print(f"[Tilt] {angle}° 내림")
 
     def release(self):
         self.board.set_pwm_disable()
