@@ -363,6 +363,7 @@ class StateMachine:
         self.logger.info("[NAVIGATE] Path complete → FINAL_APPROACH")
         self.state = State.FINAL_APPROACH
 
+
     def _wait_step(self):
         if not hasattr(self, "wait_start_time"):
             self.wait_start_time = time.time()
