@@ -352,48 +352,97 @@ class StateMachine:
     def _final_approach_step(self, detections):
         """왼쪽 기준선(검은/노란) 유지 + 앞 기준선 사라지면 STOP"""
         if not hasattr(self, '_fa_inited'):
-            self.pan_tilt.final_step_tilt_down()
-            time.sleep(1)
-            self.ctrl.set_speed(20)      
+            self.pan_tilt.tilt(45) 
+            time.sleep(1) 
             self._fa_inited = True
-            self._fa_retry_count = 0
-            self.logger.info(f"[FINAL] tilt 30°, 준비 완료")
+            self._fa_retry_count = 0 
+            self.logger.info(f"[FINAL] tilt 45°, 준비 완료")
 
         ret, frame = self.capture.read()
         if not ret:
             return
-
-        # ① 왼쪽 기준선 → steering+오프셋
-        slope = find_left_reference(frame, min_length=500, slope_thresh=0.8)
+        
+        # 1. 왼쪽 기준선 찾고 steering
+        slope = find_left_reference(frame, min_length=500, slope_thresh=1.0)
         if slope is not None:
             servo = steering(slope)
             self.ctrl.set_angle(servo)
             self.logger.info(f"[FINAL] slope={slope:.2f}, servo={servo}")
             time.sleep(1)
 
-        self.ctrl.set_angle(self.ctrl.ANGLE_FORWARD)
-        time.sleep(1)
-        self.ctrl.set_speed(20, reverse=True, sleep_duration=0.3)
-        time.sleep(1)
+        self.ctrl.set_speed(20, reverse=False, sleep_duration=0.3)
+        self.logger.info("[FINAL] 전진 (속도 20)")
+        time.sleep(0.5)
         self.ctrl.stop()
         time.sleep(0.1)
 
-        for _ in range(5):
-            self.ctrl.set_speed(15, reverse=False, time_duration=0.1)
-            time.sleep(1)
-            self.ctrl.stop()
-            time.sleep(0.1)
+        self.ctrl.set_angle(self.ctrl.ANGLE_FORWARD)
+        self.logger.info(f"[FINAL] 각도 설정: ANGLE_FORWARD ({self.ctrl.ANGLE_FORWARD})")
+        time.sleep(0.5) # 각도 변경 기다리기        
 
+        # 조금 뒤로 가기
+        self.ctrl.set_speed(20, reverse=True, sleep_duration=0.3)
+        self.logger.info("[FINAL] 후진 (속도 20)")
+        time.sleep(0.5) # 움직임 기다리기
+        self.ctrl.stop() # 멈추기
+        time.sleep(0.1) # 멈추는 거 기다리기
+
+        self.logger.info("[FINAL] 최종 접근 루프 시작!")
+
+        self.pan_tilt.tilt(60) 
+        time.sleep(1)
+
+        while True:
+            # 조금씩 앞으로 가기
+            self.ctrl.set_speed(20, reverse=False, sleep_duration=0.1)
+            self.logger.info("[FINAL] 루프: 전진 (속도 20)")
+            time.sleep(0.5) 
+            self.ctrl.stop() 
+            time.sleep(0.1) 
+
+            # 현재 프레임 읽기 
             ret, frame = self.capture.read()
             if not ret:
-                continue
+                self.logger.error("[FINAL] 루프 중 프레임 읽기 실패!")
+                continue 
 
-            if front_reference_gone(frame):
-                self.ctrl.stop()
-                self.logger.info("[FINAL] 기준선 사라짐 → 주차 완료!")
-                self.state = State.COMPLETE
-                del self._fa_inited
-                return
+            # 앞 기준선 개수 확인 
+            count_lines = count_front_lines(frame)
+            self.logger.info(f"[FINAL] 루프: front lines (60°) = {count_lines}")
+
+            # 만약 앞 기준선이 안 보이면 (0개이면)
+            if count_lines == 0:
+                self.logger.info("[FINAL] 루프: 60°에서 기준선 안 보임. 20°로 다시 확인.")
+                # 카메라 올려서 확인인
+                self.pan_tilt.tilt(20)
+                time.sleep(1) 
+
+                ret_20, frame_20 = self.capture.read()
+
+                # 20도 틸트 상태에서 앞 기준선 개수 다시 확인
+                count_lines_at_20 = count_front_lines(frame_20)
+                self.logger.info(f"[FINAL] 루프: front lines (20°) = {count_lines_at_20}")
+
+                #  20도에서도 앞 기준선이 안 보이면 (0개이면) → 진짜 끝!
+                if count_lines_at_20 == 0:
+                    self.ctrl.stop() # 최종 멈춤!
+                    self.logger.info("[FINAL] 20°에서도 기준선 사라짐 → 주차 완료!")
+                    self.state = State.COMPLETE # 상태 완료로 변경
+                    if hasattr(self, '_fa_inited'):
+                        del self._fa_inited # 초기화 플래그 삭제
+                    return # 함수 종료! 주차 끝!
+
+                #  20도에서는 앞 기준선이 보이면 (0개가 아니면) → 45도로 돌아가서 루프 계속!
+                else:
+                    self.logger.info("[FINAL] 20°에서 기준선 다시 발견. 45°로 돌아가 루프 계속.")
+                    self.pan_tilt.tilt(45) # ✨ 틸트 다시 45도로!
+                    time.sleep(1) # 틸트 동작 기다리기
+                    # 루프는 자동으로 계속됨
+
+            #  60도 틸트 상태에서 앞 기준선이 보이면 (0개가 아니면) → 루프 계속!
+            else:
+                 # 루프는 자동으로 계속됨
+                 pass # 딱히 할 거 없으면 pass
 
     def _complete_step(self):
         self.logger.info(f"Parked at slot {self.goal_slot}")
