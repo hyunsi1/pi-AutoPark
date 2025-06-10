@@ -1,167 +1,161 @@
 import cv2
 import numpy as np
-from itertools import combinations
+import os
 
-def detect_parking_slot_by_contour(image, debug=False):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+# --- 파라미터 설정 ---
+REAL_RECT_WIDTH_M = 0.5    # 실제 테이프 사각형 가로 길이 (m)
+FOV_DEG          = 60.0     # 카메라 수평 시야각 (°)
 
-    # 1. 블러 처리 → 노이즈 제거
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+THRESHOLD        = 80       # 그레이스케일 임계값
+CLOSE_KSIZE      = 45       # 모폴로지 closing 커널 크기 (px)
 
-    # 2. 이진화 → 선을 강조
-    _, binary = cv2.threshold(blurred, 120, 255, cv2.THRESH_BINARY_INV)
+# 검출 대상 면적의 최소/최대 비율 (이미지 전체 대비)
+MIN_AREA_RATIO   = 0.005    # 0.5% 이하 건너뜀
+MAX_AREA_RATIO   = 0.9      # 90% 이상 건너뜀
 
-    # 3. Morphological closing → 선 끊김 연결
-    kernel = np.ones((5, 5), np.uint8)
-    closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+def estimate_distance(real_w, px_w, img_w, fov_deg=FOV_DEG):
+    fov   = np.radians(fov_deg)
+    focal = img_w / (2 * np.tan(fov/2))
+    return real_w * focal / (px_w + 1e-6)
 
-    # 4. 윤곽선 검출
-    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+def order_corners(pts):
+    pts = sorted(pts, key=lambda p: (p[1], p[0]))
+    top = sorted(pts[:2], key=lambda p: p[0])
+    bot = sorted(pts[2:], key=lambda p: p[0])
+    return [top[0], top[1], bot[1], bot[0]]
 
-    candidate_centers = []
+def find_black_rect_and_distance(image, debug=False):
+    h, w      = image.shape[:2]
+    img_area  = h * w
+    min_area  = MIN_AREA_RATIO * img_area
+    max_area  = MAX_AREA_RATIO * img_area
 
-    for cnt in contours:
-        approx = cv2.approxPolyDP(cnt, epsilon=0.02 * cv2.arcLength(cnt, True), closed=True)
-        if len(approx) == 4 and cv2.contourArea(approx) > 1000:
-            # 4각형이면 주차 슬롯 후보로 간주
-            pts = [tuple(p[0]) for p in approx]
-            cx = int(np.mean([p[0] for p in pts]))
-            cy = int(np.mean([p[1] for p in pts]))
-            candidate_centers.append(((cx, cy), pts))
+    # 1) 전처리
+    gray   = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, THRESHOLD, 255, cv2.THRESH_BINARY_INV)
+    kernel  = np.ones((CLOSE_KSIZE, CLOSE_KSIZE), np.uint8)
+    closed  = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
-            if debug:
-                cv2.drawContours(image, [approx], -1, (0, 255, 0), 2)
-                cv2.circle(image, (cx, cy), 5, (0, 0, 255), -1)
-                cv2.putText(image, f"({cx}, {cy})", (cx + 5, cy - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+    # 2) 컨투어 검출 & 면적 필터링
+    cnts, _    = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    valid_cnts = []
+    for c in cnts:
+        area = cv2.contourArea(c)
+        if min_area < area < max_area:
+            valid_cnts.append((c, area))
+    valid_cnts.sort(key=lambda x: x[1], reverse=True)
 
-    if candidate_centers:
-        # 화면 아래에 가까운 사각형 우선 선택
-        candidate_centers.sort(key=lambda x: x[0][1], reverse=True)
-        return candidate_centers[0][0], image
+    best_poly = None
 
-    return None, image
-
-'''
-def detect_parking_lines(image, debug=False):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blurred, 50, 150)
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=60, maxLineGap=10)
-
-    line_image = image.copy()
-    line_coords = []
-
-    if lines is not None:
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-            line_coords.append(((x1, y1), (x2, y2)))
-            if debug:
-                cv2.line(line_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-    return line_coords, line_image
-
-
-def is_rectangle(pts, tol=10):
-    if len(pts) != 4:
-        return False
-
-    # 정렬된 네 꼭지점
-    pts = sorted(pts, key=lambda x: (x[1], x[0]))  # 우선 Y로, 다음 X로 정렬
-    top = sorted(pts[:2], key=lambda x: x[0])   # top-left, top-right
-    bottom = sorted(pts[2:], key=lambda x: x[0])  # bottom-left, bottom-right
-
-    p1, p2, p3, p4 = top[0], top[1], bottom[1], bottom[0]
-
-    # 거리 조건 확인 (대각선 길이 유사성)
-    def dist(a, b): return np.linalg.norm(np.array(a) - np.array(b))
-    d1 = dist(p1, p3)
-    d2 = dist(p2, p4)
-    return abs(d1 - d2) < tol
-
-def find_parking_slot_center(lines, image_shape):
-    if not lines or len(lines) < 4:
-        return None
-
-    # 모든 선분의 끝점 추출
-    points = []
-    for (x1, y1), (x2, y2) in lines:
-        points.append((x1, y1))
-        points.append((x2, y2))
-
-    # 가까운 점들을 클러스터링 (중복 제거)
-    clustered = []
-    for pt in points:
-        matched = False
-        for c in clustered:
-            if np.linalg.norm(np.array(pt) - np.array(c)) < 20:  # 20픽셀 이내면 같은 점
-                matched = True
+    # 3) approxPolyDP 시도 (다중 epsilon)
+    for cnt, _ in valid_cnts:
+        for eps in (0.02, 0.04, 0.06):
+            approx = cv2.approxPolyDP(cnt, eps * cv2.arcLength(cnt, True), True)
+            if len(approx) == 4 and cv2.isContourConvex(approx):
+                # top-left 계산
+                pts_ord = order_corners([tuple(pt[0]) for pt in approx])
+                if pts_ord[0] == (0, 0):
+                    continue  # (0,0)이면 다음 후보
+                best_poly = approx
                 break
-        if not matched:
-            clustered.append(pt)
+        if best_poly is not None:
+            break
 
-    if len(clustered) < 4:
-        return None
+    # 4) fallback: minAreaRect on 가장 큰 valid contour
+    if best_poly is None and valid_cnts:
+        cnt0 = valid_cnts[0][0]
+        rect = cv2.minAreaRect(cnt0)
+        box  = cv2.boxPoints(rect)
+        pts_box = [tuple(pt) for pt in np.intp(box)]
+        pts_ord = order_corners(pts_box)
+        # fallback 면적·크기 체크 + (0,0) 제외
+        box_area = rect[1][0] * rect[1][1]
+        if (min_area < box_area < max_area and
+            rect[1][0] < w*0.9 and rect[1][1] < h*0.9 and
+            pts_ord[0] != (0, 0)):
+            best_poly = np.array(pts_box, dtype=np.int32).reshape(-1,1,2)
 
-    # 가능한 4점 조합에서 사각형인지 확인
-    for combo in combinations(clustered, 4):
-        if is_rectangle(combo):
-            cx = int(np.mean([p[0] for p in combo]))
-            cy = int(np.mean([p[1] for p in combo]))
+    vis = image.copy()
+    if best_poly is None:
+        if debug:
+            #cv2.imshow("Mask", closed)
+            return None, None, None, vis  # 검출 실패
 
-            # 이미지 경계 체크
-            h, w = image_shape[:2]
-            if 20 < cx < w - 20 and 20 < cy < h - 20:
-                return (cx, cy)
+    # 5) 코너 정렬 및 거리 계산
+    corners = [tuple(pt[0]) for pt in best_poly]
+    ordered = order_corners(corners)
+    tl, tr = ordered[0], ordered[1]
+    px_w    = np.hypot(tr[0]-tl[0], tr[1]-tl[1])
+    dist    = estimate_distance(REAL_RECT_WIDTH_M, px_w, w)
 
-    return None
+    # 시각화
+    '''cv2.drawContours(vis, [np.array(ordered)], -1, (0,255,0), 3)
+    for p in ordered:
+        cv2.circle(vis, p, 8, (0,0,255), -1)
+    cv2.circle(vis, tl, 12, (255,0,0), -1)
+    cv2.putText(vis, f"Dist: {dist:.2f} m", (10, h-20),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,255,255), 2)
+    if debug:
+        cv2.imshow("Detection Debug", vis)'''
+
+    return tl, ordered, dist, vis
+
+import cv2
+import numpy as np
+
+def find_left_reference(frame, threshold=60, min_line_len=50):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _, bin_img = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
+    edges = cv2.Canny(bin_img, 50, 150, apertureSize=3)
+    
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=min_line_len, maxLineGap=10)
+    if lines is None:
+        return None, bin_img
+
+    leftmost = None
+    min_x = float('inf')
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        x_avg = (x1 + x2) / 2
+        if x_avg < min_x:
+            min_x = x_avg
+            leftmost = (x1, y1, x2, y2)
+
+    return leftmost, bin_img
+
+def front_reference_gone(frame, threshold=60, min_area=5000):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
+    
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area > min_area:
+            return False  # 여전히 기준선 존재
+
+    return True  # 기준선 사라짐
 
 def main():
-    # 이미지 파일 경로 (본인의 이미지 경로로 수정)
-    image_path = "C:\\Users\\user\OneDrive\\Documents\\VSCode\\pi_AutoPark\\data\\logs\\hough.png"
+    folder = r"C:\Users\user\OneDrive\Documents\VSCode\pi_AutoPark\data"
+    for fname in os.listdir(folder):
+        if not fname.lower().endswith(('.jpg','.jpeg','.png','.bmp')):
+            continue
+        path = os.path.join(folder, fname)
+        img  = cv2.imread(path)
+        if img is None:
+            print(f"[{fname}] 로드 실패"); continue
 
-    # 이미지 읽기
-    image = cv2.imread(image_path)
-    if image is None:
-        print(f"이미지를 불러올 수 없습니다: {image_path}")
-        return
+        tl, corners, dist, vis = find_black_rect_and_distance(img, debug=True)
+        print(f"--- {fname} ---")
+        if tl:
+            print("Top-left:", tl)
+            print("Corners :", corners)
+            print(f"Distance: {dist:.2f} m")
+        else:
+            print("사각형 검출 실패")
 
-    # 1. 직선 검출
-    lines, debug_image = detect_parking_lines(image, debug=True)
-
-    # 2. 중심점 계산
-    center = find_parking_slot_center(lines, image.shape)
-    if center:
-        cx, cy = center
-        cv2.circle(debug_image, (cx, cy), 6, (0, 0, 255), -1)
-        print(f"주차 슬롯 중심: {center}")
-    else:
-        print("직선 부족: 슬롯 중심 계산 불가")
-
-    # 3. 결과 이미지 출력
-    cv2.imshow("Detected Parking Lines", debug_image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-'''
-
-def main():
-    image_path = "C:\\Users\\user\\OneDrive\\Documents\\VSCode\\pi_AutoPark\\data\\logs\\hough.png"
-    image = cv2.imread(image_path)
-
-    if image is None:
-        print(f"이미지를 불러올 수 없습니다: {image_path}")
-        return
-
-    center, debug_image = detect_parking_slot_by_contour(image, debug=True)
-
-    if center:
-        print(f"[검출 성공] 주차 슬롯 중심: {center}")
-    else:
-        print("[검출 실패] 사각형 형태의 슬롯을 찾지 못했습니다.")
-
-    cv2.imshow("Contour-based Parking Slot Detection", debug_image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()

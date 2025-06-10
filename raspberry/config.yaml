@@ -1,58 +1,42 @@
-# config/config.yaml
 camera:
-  # 0 = 기본 웹캠, 또는 이미지 폴더 테스트시 null
   source: 0
   image_folder: null
   loop: false
 
 yolo:
-  # 모델 파일 경로
   coco_weights: /home/pi/autopark/yolov5n.pt
-  custom_weights: /home/pi/autopark/yolov5_weight/best_ver2.pt
-  #custom_weights: /home/pi/autopark/yolov5_weight/custom_model.tflite
-  #coco_weights: /home/pi/autopark/yolov5_weight/coco_model.tflite
-  # 검출 임계값
+  custom_weights: /home/pi/autopark/yolov5_weight/last5.pt
   conf_thres: 0.3
   iou_thres: 0.45
   max_det: 50
 
-monodepth:
-  # 킥보드 실제 세로 길이 (m)
-  object_height: 0.3
-  # 카메라 높이 (m)
-  camera_height: 0.4
-  # 카메라 틸트 각도 (deg)
-  tilt_angle: 0
-  # 'ratio' 또는 'ground_plane'
-  method: ratio
+pixel_to_meter: 0.005
+speed_mps: 0.8
+angle_threshold_deg: 20
 
-# 주차 구역 네 꼭짓점 (화면 픽셀 좌표)
-slot_area_coords:
-  - [100,  50]   # top-left
-  - [540,  50]   # top-right
-  - [540, 370]   # bottom-right
-  - [100, 370]   # bottom-left
+navigate_speed: 30
+final_approach_threshold: 0.5
 
-# 슬롯 간격 (m)
-slot_gap: 0.1
-
-# PathPlanner 분할 세그먼트 수
-path_segments: 5
+obstacle_classes: [0]  # custom 객체 class ID (예: 사람 등)
+obstacle_distance_threshold: 1.0  # custom 객체의 위험 거리 (m)
+obstacle_height_ratio_threshold: 0.7  # coco 객체의 프레임 비율 임계값
+max_wait_retries: 5  # WAIT 상태 반복 허용 횟수
 
 controller:
-  max_speed: 1.0           # 전진 최대 속도 (m/s)
-  turn_speed: 0.5          # 회전 시 속도 비율
-
-# 장애물 회피
-safe_dist: 0.5    # NAVIGATE 중 안전거리 (m)
-clearance: 0.6    # detour 시 장애물과의 최소 여유 (m)
-brake_bbox_ratio: 0.5 
+  angle_center: 65
+  angle_min: 30
+  angle_max: 100
 
 pan_tilt:
-  tilt_pin: 12 
-  final_tilt_angle: -30    # FINAL_APPROACH 시 틸트 각도
+  tilt_default: 90
+  tilt_down_final: 30
 
-final_approach:
-  threshold: 0.25        # 칸 중앙 도달용 깊이 임계치 (m)
+monodepth:
+  object_height: 1.1       # 킥보드 실제 높이 (m)
+  camera_height: 1.2       # 카메라 설치 높이 (m)
+  tilt_angle: 10.0         # 카메라 하향 각도 (deg)
+  method: hybrid           # ratio / ground_plane / hybrid
+  hybrid_weight: 0.5       # hybrid 비율 가중치
 
-finish_bbox_ratio: 0.5
+logging:
+  level: INFO
