@@ -1,6 +1,7 @@
 ### **0. 문제 인식** 
 - **킥보드 방치 문제**
 - 보행자의 안전을 위협하고, 교통약자의 이동 불편을 야기
+  
 ![Image](https://github.com/user-attachments/assets/fb11c0f0-f4b5-4264-a466-73e70ceea3a4)
 ![Image](https://github.com/user-attachments/assets/3a499feb-03c8-470e-85c3-b59fe65cdd86)
 
