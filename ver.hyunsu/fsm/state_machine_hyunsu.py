@@ -9,7 +9,7 @@ import os, sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utility.distance import euclidean_distance
 from vision.goal_setter import GoalSetter
-from vision.final_approach_helper import find_left_reference, steering, front_reference_gone
+from vision.final_approach_helper import find_left_reference, steering, count_front_lines
 
 class State(Enum):
     SEARCH = auto()
