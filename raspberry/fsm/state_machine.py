@@ -283,12 +283,12 @@ class StateMachine:
             self.state = State.WAIT
             return
 
-        # 4) 매 프레임마다 항상 새로 경로 계산
+        # 4) 경로 계산
         try:
             waypoints = self.planner.plan(
                 start=self.current_pos,
                 goal=self.goal_slot,
-                grid_size=self.cfg.get("grid_size", 0.2)
+                grid_size=self.cfg.get("grid_size", 0.4)
             )
         except Exception as e:
             self.logger.warning(f"[NAVIGATE] plan() failed: {e} → direct fallback")
@@ -300,35 +300,45 @@ class StateMachine:
                 "distance": math.hypot(dx, dy)
             }]
 
-        # 5) 계산된 웨이포인트 순회
+        # 5) waypoints 순회하며 inlined navigate() 로직
+        navigate_speed = self.cfg.get("navigate_speed", 30)
         for idx, wp in enumerate(waypoints):
-            # 안전하게 튜플 언패킹
+            # 5-1) waypoint unpacking
             try:
-                x = float(wp["pos"][0])
-                y = float(wp["pos"][1])
+                x1, y1 = float(wp["pos"][0]), float(wp["pos"][1])
             except Exception as ex:
                 self.logger.error(f"[NAVIGATE] Waypoint #{idx} bad pos={wp!r}: {ex}")
                 self.state = State.ERROR
                 return
 
             x0, y0 = self.current_pos
-            x1 = float(wp["pos"][0])
-            y1 = float(wp["pos"][1])
             line = (x0, y0, x1, y1)
 
+            # 5-2) 조향 각도 계산 및 저장
             servo_ang = self.ctrl.steering_and_offset(line)
-            self.ctrl.set_angle(servo_ang)
-            self.ctrl.set_speed(self.cfg.get("navigate_speed", 30), reverse=False)
+            self._fa_servo_ang = servo_ang
 
+            # 5-3) 이동 시간 계산
             distance = float(wp.get("distance", math.hypot(x1 - x0, y1 - y0)))
-
-            # 5-2) 주행
             world_dist = distance * self.planner.pixel_to_meter
-            travel_time = world_dist / self.planner.speed_mps
-            print(f"[navigate_segment] distance={distance:.2f}m, speed={self.planner.speed_mps:.2f}m/s, travel_time={travel_time:.2f}s")
+            total_time = world_dist / self.planner.speed_mps
+            straight_time = max(0.0, total_time - 0.2)
+
+            print(f"[navigate_segment] idx={idx}, servo={servo_ang:.1f}°, "
+                  f"dist={distance:.2f}m, total_time={total_time:.2f}s")
+
+            # ── (A) 조향 후 0.2초 이동 ──
+            self.ctrl.set_angle(servo_ang)
+            self.ctrl.set_speed(navigate_speed, reverse=False)
+            time.sleep(0.2)
+            self.ctrl.set_speed(0, reverse=False)
+
+            # ── (B) 직진 ──
+            # straight heading 중 장애물 재검사
+            self.ctrl.set_angle(self.cfg.get("straight_servo_angle", 65))
+            self.ctrl.set_speed(navigate_speed, reverse=False)
             t0 = time.time()
-            while time.time() - t0 < travel_time:
-                # 이동 중에도 장애물 재검사
+            while time.time() - t0 < straight_time:
                 self.new_det_event.wait(timeout=1.0)
                 try:
                     _, det2 = self.det_q.get_nowait()
@@ -340,19 +350,18 @@ class StateMachine:
                     danger_distance=self.cfg.get("obstacle_distance_threshold", 1.0)
                 ):
                     self.ctrl.stop()
-                    self.logger.info("[NAVIGATE] Obstacle during move → WAIT")
+                    self.logger.info("[NAVIGATE] Obstacle during straight → WAIT")
                     self.state = State.WAIT
                     return
-                time.sleep(0.1)
+                time.sleep(0.05)
 
-            # 5-3) 스텝 완료
+            # 5-4) 정지 및 position 업데이트
             self.ctrl.stop()
-            self.current_pos = (x, y)
+            self.current_pos = (x1, y1)
 
-        # 6) 모든 웨이포인트 완료 시
+        # 6) 모든 웨이포인트 완료
         self.logger.info("[NAVIGATE] Path complete → FINAL_APPROACH")
         self.state = State.FINAL_APPROACH
-
 
     def _wait_step(self):
         if not hasattr(self, "wait_start_time"):
