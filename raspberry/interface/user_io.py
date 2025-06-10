@@ -3,6 +3,7 @@ import threading
 import time
 import logging
 import select
+from datetime import datetime
 
 class UserIO:
     """
@@ -30,7 +31,8 @@ class UserIO:
 
     def show_status(self, msg: str):
         """터미널에 상태 메시지 출력"""
-        timestamp = time.strftime('%H:%M:%S')
+        now = datetime.now()
+        timestamp = now.strftime('%H:%M:%S.') + f"{int(now.microsecond/1000):03d}"
         print(f"[{timestamp}] {msg}")
         logging.debug(f"Status: {msg}")
 
@@ -44,7 +46,6 @@ class UserIO:
     def wait_cancel(self, timeout: float):
         """
         취소 요청 대기 (timeout 초 내에 q 입력 시 True 반환)
-        안내 메시지는 한 번만 출력합니다.
         """
         if timeout > 0:
             print(f"{timeout:.1f}초 내에 주차를 취소하려면 q + Enter를 누르세요.")
@@ -56,7 +57,6 @@ class UserIO:
                     print("주차를 취소합니다.")
                     return True
 
-# 간단 사용 예제
 if __name__ == '__main__':
     ui = UserIO()
     ui.prompt_start()
