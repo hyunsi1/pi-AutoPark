@@ -348,101 +348,102 @@ class StateMachine:
         except Exception as e:
             self.logger.error(f"[AVOID] 예외 발생: {e}")
             self.state = State.NAVIGATE
-
+    
     def _final_approach_step(self, detections):
-        """최종 접근: 왼쪽 기준선 맞추며 직진/후진 반복 + 앞 기준선 1개 되면 멈춤"""
-        # 초기 틸트
+        """최종 주차 접근: 왼쪽 참조선 확인/조향 + 전진/후진 반복 + 선 검출 후 최종 정지"""
+        # 초기 틸트 각도 설정
         self.pan_tilt.tilt(45)
-        self.logger.info("[FINAL] tilt 45°로 초기화 완료")
+        self.logger.info("[FINAL] tilt 45도로 초기화 완료")
         time.sleep(1)
-
-        # 첫 번째 왼쪽 기준선 검출
+    
+        # 첫 번째 왼쪽 참조선 검출
         ret, frame = self.capture.read()
         if not ret:
-            self.logger.error("[FINAL] 초기 프레임 읽기 실패!")
+            self.logger.error("[FINAL] 초기 프레임 캡처 실패!")
             return
-
+    
         slope = find_left_reference(frame, min_length=500, slope_thresh=1.0)
         if slope is not None:
             servo = steering(slope)
             self.ctrl.set_angle(servo)
-            self.logger.info(f"[FINAL] 초기 왼쪽 기준선 slope={slope:.2f}, servo={servo}")
-
-        # 첫 전진/후진
-        self.ctrl.set_speed(20, reverse=False, sleep_duration=0.3)
+            self.logger.info(f"[FINAL] 첫 번째 경사도 slope={slope:.2f}, servo={servo}")
+    
+        # 첫 번째 전진/후진
+        self.ctrl.set_speed(20, reverse=False)
         self.logger.info("[FINAL] 첫 번째 전진")
-        time.sleep(0.3)
+        time.sleep(0.5)
         self.ctrl.stop()
         time.sleep(0.1)
-
-        self.ctrl.set_speed(20, reverse=True, sleep_duration=0.3)
+    
+        self.ctrl.set_speed(20, reverse=True)
         self.logger.info("[FINAL] 첫 번째 후진")
         time.sleep(0.3)
         self.ctrl.stop()
         time.sleep(0.1)
-
-        # 두 번째 왼쪽 기준선 검출
+    
+        # 두 번째 왼쪽 참조선 검출
         ret, frame = self.capture.read()
         if not ret:
-            self.logger.error("[FINAL] 두 번째 프레임 읽기 실패!")
+            self.logger.error("[FINAL] 두 번째 프레임 캡처 실패!")
             return
-
+    
         slope = find_left_reference(frame, min_length=500, slope_thresh=1.0)
+        time.sleep(1)
         if slope is not None:
             servo = steering(slope)
             self.ctrl.set_angle(servo)
-            self.logger.info(f"[FINAL] 두 번째 왼쪽 기준선 slope={slope:.2f}, servo={servo}")
-
+            self.logger.info(f"[FINAL] 두 번째 경사도 slope={slope:.2f}, servo={servo}")
+    
         # 두 번째 전진/후진
-        self.ctrl.set_speed(20, reverse=False, sleep_duration=0.3)
+        self.ctrl.set_speed(20, reverse=False)
         self.logger.info("[FINAL] 두 번째 전진")
-        time.sleep(0.3)
+        time.sleep(0.5)
         self.ctrl.stop()
         time.sleep(0.1)
-
-        self.ctrl.set_speed(20, reverse=True, sleep_duration=0.3)
+    
+        self.ctrl.set_speed(20, reverse=True)
         self.logger.info("[FINAL] 두 번째 후진")
         time.sleep(0.3)
         self.ctrl.stop()
         time.sleep(0.1)
-
-        # 틸트 60도로 올리고 조금씩 전진하며 기준선 개수 확인
+    
+        # 카메라 tilt를 60도로 변경하고 선 검출 확인
         self.pan_tilt.tilt(60)
-        self.logger.info("[FINAL] tilt 60°로 전환")
+        self.logger.info("[FINAL] tilt를 60도로 변경")
         time.sleep(1)
-
+    
         while True:
-            # 조금씩 전진
-            self.ctrl.set_speed(20, reverse=False, sleep_duration=0.1)
-            self.logger.info("[FINAL] 루프: 전진 중 (0.1s)")
-            time.sleep(0.5)
+            # 앞으로 조금씩 전진
+            self.ctrl.set_speed(20, reverse=False)
+            self.logger.info("[FINAL] 탐색 단계: 전진 (0.2s)")
+            time.sleep(0.2)
             self.ctrl.stop()
-            time.sleep(0.1)
-
-            # 앞 기준선 개수 확인
+            time.sleep(1)
+    
+            # 선 개수 확인
             ret, frame = self.capture.read()
             if not ret:
-                self.logger.error("[FINAL] 루프 프레임 읽기 실패!")
+                self.logger.error("[FINAL] 탐색 단계 프레임 캡처 실패!")
                 continue
-
+    
             count_lines = count_front_lines(frame)
-            self.logger.info(f"[FINAL] 루프: 앞 기준선 개수 = {count_lines}")
-
-            # 앞 기준선이 1개가 되면 멈추기
+            self.logger.info(f"[FINAL] 탐색 단계에서 검출된 선 개수 = {count_lines}")
+    
+            # 선이 1개면 멈추기
             if count_lines == 1:
                 self.ctrl.stop()
-                self.logger.info("[FINAL] 앞 기준선 1개 됨 → 멈춤!")
+                self.logger.info("[FINAL] 검출된 선이 1개라서 멈춤!")
                 break
 
-        # 마지막으로 살짝 앞으로 전진
-        self.ctrl.set_speed(20, reverse=False, sleep_duration=0.2)
-        self.logger.info("[FINAL] 마지막 전진")
-        time.sleep(0.5)
-        self.ctrl.stop()
-        time.sleep(0.1)
+    # 마지막으로 조금 더 전진
+    self.ctrl.set_speed(20, reverse=False)
+    time.sleep(0.2)
+    self.logger.info("[FINAL] 마지막 전진")
+    self.ctrl.stop()
+    time.sleep(0.1)
 
-        self.logger.info("[FINAL] 최종 접근 완료. 상태 COMPLETE로 전환")
-        self.state = State.COMPLETE
+    self.logger.info("[FINAL] 최종 주차 완료. COMPLETE 상태로 전환")
+    self.state = State.COMPLETE
 
     def _complete_step(self):
         self.logger.info(f"Parked at slot {self.goal_slot}")
