@@ -46,6 +46,7 @@ stateDiagram-v2
 ```
 
 - 각 FSM 상태는 `state_machine.py` 내 `_search_step`, `_navigate_step`, `_wait_step`, `_final_approach_step`, `_complete_step` 등으로 나뉘며, 프레임 단위로 처리됨.
+[autopark.pdf](https://github.com/user-attachments/files/20704078/autopark.pdf)
 
 ---
 
@@ -102,3 +103,10 @@ stateDiagram-v2
 3. `NAVIGATE` 상태 → 경로 따라 이동, 위험 감지 시 `WAIT`, 실패 시 `SEARCH` 복귀
 4. 목표 인근 도달 시 → `FINAL_APPROACH` (조향/속도 세밀 제어, tilt 하향)
 5. 기준선 인식 종료 → `COMPLETE` (주차 완료)
+
+---
+
+### **6. 데모 영상**
+![navigate (2)](https://github.com/user-attachments/assets/49fdef2d-558b-42e3-919f-fe653ebc7364)
+![final_approach](https://github.com/user-attachments/assets/77e87f38-16c2-418f-a529-f850578c026b)
+![autopark](https://github.com/user-attachments/assets/4a5ad915-703a-4132-88b2-0f5def9fa3ed)
